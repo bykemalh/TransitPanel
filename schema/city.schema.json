@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TransitJSON City",
+  "type": "object",
+  "properties": {
+    "city_id": {
+      "type": "string"
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "URL-safe benzersiz tanımlayıcı, örn. 'bursa'. API rotalarında kullanılır: /api/cities/{slug}/routes"
+    },
+    "country_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "timezone": {
+      "type": "string",
+      "pattern": "^[A-Za-z_]+(/[A-Za-z0-9_+-]+)+$",
+      "description": "IANA zaman dilimi. Saatler (HH:MM:SS) bu dilimde yerel saattir. Örn. Europe/Istanbul"
+    },
+    "center": {
+      "type": "object",
+      "properties": {
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lon": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        }
+      },
+      "required": [
+        "lat",
+        "lon"
+      ],
+      "additionalProperties": false
+    },
+    "default_zoom": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20
+    },
+    "bounds": {
+      "type": "object",
+      "properties": {
+        "north": {
+          "type": "number"
+        },
+        "south": {
+          "type": "number"
+        },
+        "east": {
+          "type": "number"
+        },
+        "west": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "north",
+        "south",
+        "east",
+        "west"
+      ],
+      "additionalProperties": false
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "city_id",
+    "slug",
+    "country_id",
+    "name",
+    "timezone",
+    "center",
+    "updated_at"
+  ],
+  "additionalProperties": false
+}

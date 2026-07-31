@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TransitJSON Route",
+  "type": "object",
+  "properties": {
+    "route_id": {
+      "type": "string"
+    },
+    "agency_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "code": {
+      "type": ["string", "null"]
+    },
+    "color": {
+      "type": ["string", "null"],
+      "pattern": "^#[0-9A-Fa-f]{6}$"
+    },
+    "vehicle_type": {
+      "type": "string",
+      "enum": [
+        "bus",
+        "tram",
+        "metro",
+        "rail",
+        "ferry",
+        "cable_tram",
+        "gondola",
+        "funicular",
+        "trolleybus",
+        "monorail",
+        "minibus",
+        "coach",
+        "water_taxi"
+      ],
+      "description": "Araç türü. bus: otobüs, tram: tramvay, metro: metro/subway, rail: demiryolu (Marmaray/banliyö/YHT), ferry: vapur/feribot, cable_tram: kablolu tramvay, gondola: teleferik/gondol, funicular: füniküler, trolleybus: troleybüs, monorail: monoray, minibus: minibüs/dolmuş, coach: şehirlerarası otobüs, water_taxi: deniz taksi/motor."
+    },
+    "fare_id": {
+      "type": ["string", "null"],
+      "description": "Bu hat için geçerli ücret tanımı. fares.json'daki fare_id'ye referans verir. Opsiyonel/null — yoksa agency'nin varsayılan ücret tanımı kullanılır."
+    },
+    "route_pattern": {
+      "type": "string",
+      "enum": [
+        "round_trip",
+        "loop"
+      ],
+      "description": "round_trip: gidiş/dönüş (direction 1/2). loop: ring hat, tek yön (direction 0), başlangıç=bitiş."
+    },
+    "stop_mode": {
+      "type": "string",
+      "enum": [
+        "fixed",
+        "flexible"
+      ],
+      "description": "fixed: tüm ara duraklar tanımlı. flexible: sadece ilk/son durak tanımlı, arası serbest biniş."
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": ["string", "null"]
+    }
+
+  },
+  "required": [
+    "route_id",
+    "agency_id",
+    "name",
+    "vehicle_type",
+    "route_pattern",
+    "stop_mode",
+    "updated_at"
+  ],
+  "additionalProperties": false
+}

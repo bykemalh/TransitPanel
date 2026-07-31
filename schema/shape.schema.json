@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TransitJSON Shape",
+  "description": "Rota geometrisi. Doğrudan lat/lon koordinat dizisi kullanılır; encoded polyline yoktur. Kapsam sınırı (v1): her route_id + direction için tek shape vardır; trip bazlı varyant güzergâh yoktur.",
+  "type": "object",
+  "properties": {
+    "shape_id": {
+      "type": "string"
+    },
+    "route_id": {
+      "type": "string"
+    },
+    "direction": {
+      "type": "integer",
+      "enum": [
+        0,
+        1,
+        2
+      ],
+      "description": "0: loop (tek yön döngü), 1: gidiş, 2: dönüş."
+    },
+    "coordinates": {
+      "type": "array",
+      "description": "Güzergâh noktaları (sıralı).",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "properties": {
+          "lat": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90
+          },
+          "lon": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180
+          }
+        },
+        "required": [
+          "lat",
+          "lon"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "shape_id",
+    "route_id",
+    "direction",
+    "coordinates",
+    "updated_at"
+  ],
+  "additionalProperties": false
+}

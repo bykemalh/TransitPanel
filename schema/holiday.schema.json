@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TransitJSON Holiday",
+  "description": "Resmi tatil günleri. Sabit kural: resmi tatil = Pazar günü sefer programı uygulanır.",
+  "type": "object",
+  "properties": {
+    "date": {
+      "type": "string",
+      "format": "date"
+    },
+    "country_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "applies_as": {
+      "type": "string",
+      "enum": [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday"
+      ],
+      "description": "O gün hangi günün sefer programının uygulanacağı.",
+      "default": "sunday"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "date",
+    "country_id",
+    "name",
+    "applies_as",
+    "updated_at"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TransitJSON Fare",
+  "description": "Ücret tanımı. Bir agency'nin farklı yolcu profilleri (tam, öğrenci, 65+) için ayrı fare kayıtları oluşturulur. Tüm hatlarda başlangıçtan sona kadar sabit (flat) ücret uygulanır.",
+  "type": "object",
+  "properties": {
+    "fare_id": {
+      "type": "string",
+      "description": "Proje genelinde tekil. Örn. 'BUR-tam', 'BUR-ogrenci'."
+    },
+    "agency_id": {
+      "type": "string",
+      "description": "Bu ücretin ait olduğu ajans."
+    },
+    "name": {
+      "type": "string",
+      "description": "Ücretin Türkçe adı. Örn. 'Tam Bilet', 'Öğrenci', '65+ Ücretsiz'."
+    },
+    "name_en": {
+      "type": "string",
+      "description": "Ücretin İngilizce adı. Örn. 'Full Ticket', 'Student', '65+ Free'."
+    },
+    "fare_type": {
+      "type": "string",
+      "enum": [
+        "flat"
+      ],
+      "description": "flat: sabit ücret (tüm hat boyunca aynı fiyat)."
+    },
+    "price": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Sabit ücret. Hat boyunca başlangıçtan sona kadar değişmez."
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO 4217 para birimi kodu. Örn. 'TRY', 'EUR', 'USD'."
+    },
+    "payment_methods": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "cash",
+          "smart_card",
+          "credit_card",
+          "mobile",
+          "contactless",
+          "qr"
+        ]
+      },
+      "description": "Kabul edilen ödeme yöntemleri. cash: nakit, smart_card: kent kart/akbil, credit_card: kredi/banka kartı, mobile: mobil uygulama, contactless: temassız, qr: QR kod."
+    },
+    "transfer_duration": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "Aktarma süresi (dakika). Bu süre içinde yapılan aktarmalarda ek ücret alınmaz. null = aktarma hakkı yok."
+    },
+    "transfer_limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "transfer_duration süresi içinde kaç aktarma hakkı var. null = sınırsız (süre dolana kadar)."
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "fare_id",
+    "agency_id",
+    "name",
+    "name_en",
+    "fare_type",
+    "price",
+    "currency",
+    "updated_at"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,292 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TransitJSON Stop",
+  "description": "TransitJSON v2 — Durak. Erişilebilirlik flag'leri, fiziksel özellikler ve opsiyonel platform dizisi içerir. Tüm yeni alanlar opsiyoneldir; mevcut v1 kayıtları eksik/null bırakılarak da geçerlidir.",
+  "type": "object",
+  "properties": {
+    "stop_id": {
+      "type": "string",
+      "description": "Proje genelinde tekil. Örn. '{city_id}-{sequence}' formatı önerilir: BUR-01023"
+    },
+    "city_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "lat": {
+      "type": "number",
+      "minimum": -90,
+      "maximum": 90
+    },
+    "lon": {
+      "type": "number",
+      "minimum": -180,
+      "maximum": 180
+    },
+    "location_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "stop",
+        "station",
+        "entrance",
+        "generic_node",
+        null
+      ],
+      "description": "GTFS uyumlu konum tipi. stop: basit durak. station: istasyon/kompleks (birden fazla platform içerebilir). entrance: istasyon girişi. generic_node: yolcu erişimi olmayan geometrik nokta. null ise 'stop' kabul edilir."
+    },
+    "wheelchair_accessible": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Tekerlekli sandalye ile durağa/durağın içine erişilebilir mi? null = bilinmiyor."
+    },
+    "has_ramp": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Rampa var mı?"
+    },
+    "has_elevator": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Asansör var mı?"
+    },
+    "has_tactile_paving": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Görme engelliler için taktil yüzey var mı?"
+    },
+    "has_audio_announcement": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Sesli yaklaşan araç/hat anonsu var mı?"
+    },
+    "has_braille_signage": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Braille tabela var mı?"
+    },
+    "shelter_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "none",
+        "open",
+        "closed",
+        "heated",
+        null
+      ],
+      "description": "Bekleme alanı türü. none: bekleme alanı yok. open: yarı kapalı/peron üstü örtü. closed: tam kapalı durak (camekanlı). heated: kapalı + ısıtmalı. null = bilinmiyor."
+    },
+    "has_bench": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Oturma yeri var mı?"
+    },
+    "has_lighting": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Aydınlatma var mı?"
+    },
+    "has_real_time_display": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Canlı kalkış saati ekranı var mı?"
+    },
+    "has_ticket_machine": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Bilet makinesi var mı?"
+    },
+    "has_trash_bin": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Çöp kutusu var mı?"
+    },
+    "has_wifi": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Ücretsiz WiFi var mı?"
+    },
+    "has_security_camera": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Güvenlik kamerası var mı?"
+    },
+    "has_bike_rack": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Bisiklet parkı var mı?"
+    },
+    "platforms": {
+      "type": "array",
+      "description": "Bu durağa bağlı platformlar. Basit duraklarda boş veya 1 elemanlı; metro/tren istasyonları gibi büyük yapılarda birden fazla platform bulunabilir. Her platform kendi erişilebilirlik/fiziksel bayraklarını taşır; durağın kök alanlarından bağımsızdır.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "platform_id": {
+            "type": "string",
+            "description": "Durak içinde tekil. Örn. 'BUR-01023-P1' veya 'A'."
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "İnsan-okunur platform kodu (A, B, 1, 2, vb.)."
+          },
+            "direction": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "enum": [
+                0,
+                1,
+                2,
+                null
+              ],
+              "description": "0: loop (tek yön döngü), 1: gidiş, 2: dönüş, null: yöne özgü değil (örn. genel bekleme alanı)."
+            },
+          "lat": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90
+          },
+          "lon": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180
+          },
+          "wheelchair_accessible": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "has_elevator": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "has_ramp": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "has_tactile_paving": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "has_audio_announcement": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "has_shelter": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "shelter_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "none",
+              "open",
+              "closed",
+              "heated",
+              null
+            ]
+          },
+          "has_bench": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "has_lighting": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "platform_id",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "stop_id",
+    "city_id",
+    "name",
+    "lat",
+    "lon",
+    "updated_at"
+  ],
+  "additionalProperties": false
+}
