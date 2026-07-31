@@ -1,5 +1,8 @@
 import { useLoaderData, useSearchParams, useSubmit, useActionData, useNavigation } from "react-router";
 import { useEffect, useRef, useState } from "react";
+import * as maplibregl from "maplibre-gl";
+import type { Map as MlMap, Marker, Popup, StyleSpecification } from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
 import { getCountriesAndCities, getRoutesForCity, getMapRouteDetails, saveRouteEditorData } from "../lib/db-operations.server";
 import {
   MapPin,
@@ -25,30 +28,58 @@ export async function loader({ request }: { request: Request }) {
   const selectedCityId = url.searchParams.get("city") || "";
   const selectedRouteId = url.searchParams.get("route") || "";
 
+  // When both city and route are known, run all queries in parallel
+  if (selectedCityId && selectedRouteId) {
+    const [cities, routes, routeDetails] = await Promise.all([
+      getCountriesAndCities(),
+      getRoutesForCity(selectedCityId),
+      getMapRouteDetails(selectedRouteId),
+    ]);
+
+    const activeCityObj = cities.find((c: any) => c.city_id === selectedCityId) || null;
+
+    return {
+      cities,
+      routes,
+      activeCityId: selectedCityId,
+      activeRouteId: selectedRouteId,
+      activeCityObj,
+      routeDetails,
+    };
+  }
+
   const cities = await getCountriesAndCities();
   const activeCityId = selectedCityId || (cities.length > 0 ? cities[0].city_id : "");
   
   let routes: any[] = [];
+  let routeDetails = null;
+
   if (activeCityId) {
     routes = await getRoutesForCity(activeCityId);
+    const activeRouteId = selectedRouteId || (routes.length > 0 ? routes[0].route_id : "");
+    if (activeRouteId) {
+      routeDetails = await getMapRouteDetails(activeRouteId);
+    }
+
+    const activeCityObj = cities.find((c: any) => c.city_id === activeCityId) || null;
+
+    return {
+      cities,
+      routes,
+      activeCityId,
+      activeRouteId,
+      activeCityObj,
+      routeDetails,
+    };
   }
-
-  const activeRouteId = selectedRouteId || (routes.length > 0 ? routes[0].route_id : "");
-
-  let routeDetails = null;
-  if (activeRouteId) {
-    routeDetails = await getMapRouteDetails(activeRouteId);
-  }
-
-  const activeCityObj = cities.find((c: any) => c.city_id === activeCityId) || null;
 
   return {
     cities,
-    routes,
-    activeCityId,
-    activeRouteId,
-    activeCityObj,
-    routeDetails,
+    routes: [],
+    activeCityId: "",
+    activeRouteId: "",
+    activeCityObj: null,
+    routeDetails: null,
   };
 }
 
@@ -91,13 +122,19 @@ export default function RouteEditorPage() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapInstanceRef = useRef<any>(null);
-  const leafletRef = useRef<any>(null);
-  const layerGroupRef = useRef<any>(null);
+  const mapInstanceRef = useRef<MlMap | null>(null);
+  const mapReadyRef = useRef<boolean>(false);
+  const shapeMarkersRef = useRef<Marker[]>([]);
+  const stopMarkersRef = useRef<Marker[]>([]);
+  const mapClickHandlerRef = useRef<((e: any) => void) | null>(null);
+  const routeColor = "#dc2626";
+  const stopColor = "#2563eb";
+  const MAPTILER_KEY =
+    (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_MAPTILER_KEY) || "";
 
   const [selectedDirection, setSelectedDirection] = useState<number>(1);
   const [routeSearchText, setRouteSearchText] = useState<string>("");
-  const [valhallaUrl, setValhallaUrl] = useState<string>("https://valhalla1.openstreetmap.de");
+  const [valhallaUrl, setValhallaUrl] = useState<string>("https://valhala.bykemalh.me");
   const [isValhallaRouting, setIsValhallaRouting] = useState<boolean>(false);
 
   // Editing State
@@ -118,13 +155,17 @@ export default function RouteEditorPage() {
     }
 
     const targetShape = routeDetails.shapes.find((s: any) => Number(s.direction) === effectiveDirection) || routeDetails.shapes[0];
-    if (targetShape && targetShape.coordinates) {
+    if (targetShape && targetShape.coordinates && Array.isArray(targetShape.coordinates)) {
       setShapeCoords(targetShape.coordinates.map((c: any) => ({ lat: Number(c.lat), lon: Number(c.lon) })));
     } else {
       setShapeCoords([]);
     }
 
-    const targetStops = routeDetails.stops.filter((s: any) => Number(s.direction) === effectiveDirection);
+    let targetStops = routeDetails.stops.filter((s: any) => Number(s.direction) === effectiveDirection);
+    if (targetStops.length === 0 && routeDetails.stops.length > 0) {
+      targetStops = routeDetails.stops;
+    }
+
     setStopsList(
       targetStops.map((s: any, idx: number) => ({
         stop_id: s.stop_id,
@@ -146,178 +187,197 @@ export default function RouteEditorPage() {
     setSearchParams({ city: activeCityId, route: routeId });
   };
 
-  // Leaflet Map Initialization
+  // MapLibre Map Initialization
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
-    let L: any;
-    let map: any;
+    const centerLat = activeCityObj ? Number(activeCityObj.lat) : 40.19;
+    const centerLon = activeCityObj ? Number(activeCityObj.lon) : 29.06;
+    const defaultZoom = activeCityObj?.default_zoom || 12;
 
-    import("leaflet").then((module) => {
-      L = module.default;
-      leafletRef.current = L;
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.remove();
+      mapInstanceRef.current = null;
+      mapReadyRef.current = false;
+    }
 
-      delete (L.Icon.Default.prototype as any)._getIconUrl;
-      L.Icon.Default.mergeOptions({
-        iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png",
-        iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png",
-        shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png",
-      });
+    const style: StyleSpecification = {
+      version: 8,
+      glyphs: `https://api.maptiler.com/fonts/{fontstack}/{range}.pbf?key=${MAPTILER_KEY}`,
+      sources: {
+        maptiler: {
+          type: "vector",
+          url: `https://api.maptiler.com/tiles/v3/tiles.json?key=${MAPTILER_KEY}`,
+        },
+      },
+      layers: [
+        { id: "background", type: "background", paint: { "background-color": "#f8f4ef" } },
+        { id: "water", type: "fill", source: "maptiler", "source-layer": "water", paint: { "fill-color": "#a8c8e8" } },
+        { id: "landcover-park", type: "fill", source: "maptiler", "source-layer": "landcover", filter: ["==", "class", "park"], paint: { "fill-color": "#d8e8d0", "fill-opacity": 0.7 } },
+        { id: "landcover-wood", type: "fill", source: "maptiler", "source-layer": "landcover", filter: ["==", "class", "wood"], paint: { "fill-color": "#cde0c4", "fill-opacity": 0.6 } },
+        { id: "landuse-residential", type: "fill", source: "maptiler", "source-layer": "landuse", filter: ["==", "class", "residential"], paint: { "fill-color": "#ececec" } },
+        { id: "building", type: "fill", source: "maptiler", "source-layer": "building", paint: { "fill-color": "#d9d5cc", "fill-outline-color": "#bdb8ad" } },
+        { id: "road-minor-casing", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["in", "class", "minor", "service", "tertiary"], paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1, 16, 4] } },
+        { id: "road-minor", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["in", "class", "minor", "service", "tertiary"], paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.5, 16, 3] } },
+        { id: "road-secondary-casing", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["in", "class", "secondary", "trunk"], paint: { "line-color": "#ffd591", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 16, 8] } },
+        { id: "road-secondary", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["in", "class", "secondary", "trunk"], paint: { "line-color": "#ffd591", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.5, 16, 6] } },
+        { id: "road-primary-casing", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["==", "class", "primary"], paint: { "line-color": "#f9a06b", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 2, 16, 10] } },
+        { id: "road-primary", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["==", "class", "primary"], paint: { "line-color": "#f9a06b", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.5, 16, 7] } },
+        { id: "road-motorway-casing", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["==", "class", "motorway"], paint: { "line-color": "#e89263", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 2, 16, 12] } },
+        { id: "road-motorway", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["==", "class", "motorway"], paint: { "line-color": "#e89263", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 0.5, 16, 9] } },
+        { id: "road-rail", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["==", "class", "rail"], paint: { "line-color": "#a7b0b8", "line-dasharray": [2, 2] } },
+        { id: "place-city", type: "symbol", source: "maptiler", "source-layer": "place", filter: ["==", "class", "city"], layout: { "text-field": "{name:latin}", "text-size": ["interpolate", ["linear"], ["zoom"], 4, 11, 10, 16], "text-font": ["Noto Sans Regular"] }, paint: { "text-color": "#1a1a1a", "text-halo-color": "#ffffff", "text-halo-width": 1.5 } },
+        { id: "place-town", type: "symbol", source: "maptiler", "source-layer": "place", filter: ["==", "class", "town"], layout: { "text-field": "{name:latin}", "text-size": ["interpolate", ["linear"], ["zoom"], 6, 10, 12, 14], "text-font": ["Noto Sans Regular"] }, paint: { "text-color": "#333333", "text-halo-color": "#ffffff", "text-halo-width": 1.2 } },
+        { id: "place-village", type: "symbol", source: "maptiler", "source-layer": "place", filter: ["==", "class", "village"], layout: { "text-field": "{name:latin}", "text-size": ["interpolate", ["linear"], ["zoom"], 8, 9, 14, 12], "text-font": ["Noto Sans Regular"] }, paint: { "text-color": "#555555", "text-halo-color": "#ffffff", "text-halo-width": 1 } },
+        { id: "road-label", type: "symbol", source: "maptiler", "source-layer": "transportation_name", minzoom: 12, layout: { "text-field": "{name:latin}", "text-size": 11, "text-font": ["Noto Sans Regular"], "symbol-placement": "line" }, paint: { "text-color": "#3a3a3a", "text-halo-color": "#ffffff", "text-halo-width": 1.2 } },
+      ],
+    };
 
-      const centerLat = activeCityObj ? Number(activeCityObj.lat) : 40.19;
-      const centerLon = activeCityObj ? Number(activeCityObj.lon) : 29.06;
-      const defaultZoom = activeCityObj?.default_zoom || 12;
-
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
-        mapInstanceRef.current = null;
-      }
-
-      map = L.map(mapContainerRef.current!, {
-        center: [centerLat, centerLon],
-        zoom: defaultZoom,
-        zoomControl: true,
-      });
-
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      }).addTo(map);
-
-      mapInstanceRef.current = map;
-      layerGroupRef.current = L.layerGroup().addTo(map);
-
-      setTimeout(() => {
-        if (map) map.invalidateSize();
-      }, 150);
-
-      renderLeafletLayers(map, L);
+    const map = new maplibregl.Map({
+      container: mapContainerRef.current!,
+      style,
+      center: [centerLon, centerLat],
+      zoom: defaultZoom,
+      attributionControl: { compact: true },
     });
 
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+
+    map.on("load", () => {
+      // Add line source/layers (casing + main)
+      if (!map.getSource("route-line")) {
+        map.addSource("route-line", {
+          type: "geojson",
+          data: { type: "FeatureCollection", features: [] },
+        });
+        map.addLayer({
+          id: "route-casing",
+          type: "line",
+          source: "route-line",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: { "line-color": "#ffffff", "line-width": 9, "line-opacity": 0.9 },
+        });
+        map.addLayer({
+          id: "route-main",
+          type: "line",
+          source: "route-line",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: { "line-color": routeColor, "line-width": 5, "line-opacity": 1 },
+        });
+      }
+      mapReadyRef.current = true;
+      renderMapLayers();
+    });
+
+    mapInstanceRef.current = map;
+
+    setTimeout(() => {
+      if (map) map.resize();
+    }, 150);
+
     return () => {
+      shapeMarkersRef.current.forEach((m) => m.remove());
+      shapeMarkersRef.current = [];
+      stopMarkersRef.current.forEach((m) => m.remove());
+      stopMarkersRef.current = [];
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
+        mapReadyRef.current = false;
       }
     };
-  }, [activeCityId]);
+  }, [activeCityId, MAPTILER_KEY]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-render layers when shapeCoords, stopsList or editMode change
   useEffect(() => {
+    if (mapReadyRef.current) renderMapLayers();
+  }, [shapeCoords, stopsList, editMode, activeRouteId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function renderMapLayers() {
     const map = mapInstanceRef.current;
-    const L = leafletRef.current;
-    if (!map || !L) return;
+    if (!map || !mapReadyRef.current) return;
 
-    renderLeafletLayers(map, L);
-  }, [shapeCoords, stopsList, editMode]);
-
-  function renderLeafletLayers(map: any, L: any) {
-    if (!map || !L) return;
-
-    if (layerGroupRef.current) {
-      layerGroupRef.current.clearLayers();
-    } else {
-      layerGroupRef.current = L.layerGroup().addTo(map);
-    }
-
-    const layerGroup = layerGroupRef.current;
-    const routeColor = activeRoute?.color || "#2563eb";
-
-    // 1. Draw Polyline shape
-    if (shapeCoords.length > 0) {
-      const latLons = shapeCoords.map((c) => [c.lat, c.lon]);
-
-      // Outer white casing
-      L.polyline(latLons, {
-        color: "#ffffff",
-        weight: 9,
-        opacity: 0.9,
-        lineCap: "round",
-        lineJoin: "round",
-      }).addTo(layerGroup);
-
-      // Main colored line
-      const line = L.polyline(latLons, {
-        color: routeColor,
-        weight: 5,
-        opacity: 1,
-        lineCap: "round",
-        lineJoin: "round",
-      }).addTo(layerGroup);
-
-      const bounds = line.getBounds();
-      if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [50, 50] });
+    // 1. Update route line source
+    const lineSrc = map.getSource("route-line") as maplibregl.GeoJSONSource | undefined;
+    if (lineSrc) {
+      if (shapeCoords.length >= 2) {
+        lineSrc.setData({
+          type: "Feature",
+          properties: {},
+          geometry: {
+            type: "LineString",
+            coordinates: shapeCoords.map((c) => [c.lon, c.lat]),
+          },
+        });
+      } else {
+        lineSrc.setData({ type: "FeatureCollection", features: [] });
       }
-
-      // Waypoint DRAGGABLE markers for shape coordinates with Popup Actions
-      shapeCoords.forEach((c, idx) => {
-        const shapeMarker = L.marker([c.lat, c.lon], {
-          draggable: true,
-          icon: L.divIcon({
-            className: "shape-waypoint-marker",
-            html: `<div style="background-color: ${routeColor}; border: 2px solid #ffffff; width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.3); cursor: grab;"></div>`,
-            iconSize: [14, 14],
-            iconAnchor: [7, 7],
-          }),
-        }).addTo(layerGroup);
-
-        // Bind interactive popup
-        const popupContainer = document.createElement("div");
-        popupContainer.className = "p-1.5 space-y-2 text-xs font-sans min-w-[150px]";
-        popupContainer.innerHTML = `
-          <div style="font-weight: bold; color: #0f172a; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px;">
-            📍 Rota Noktası #${idx + 1}
-          </div>
-          <div style="font-size: 11px; font-family: monospace; color: #64748b;">
-            ${c.lat}, ${c.lon}
-          </div>
-          <button id="del-shape-${idx}" style="width: 100%; padding: 4px 8px; background-color: #e11d48; color: #ffffff; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; font-size: 11px;">
-            🗑️ Noktayı Sil
-          </button>
-        `;
-
-        shapeMarker.bindPopup(popupContainer);
-
-        shapeMarker.on("popupopen", () => {
-          const btn = document.getElementById(`del-shape-${idx}`);
-          if (btn) {
-            btn.onclick = () => {
-              handleRemoveShapePoint(idx);
-              map.closePopup();
-            };
-          }
-        });
-
-        shapeMarker.on("dragend", (event: any) => {
-          const newPos = event.target.getLatLng();
-          const newLat = Number(newPos.lat.toFixed(6));
-          const newLon = Number(newPos.lng.toFixed(6));
-
-          setShapeCoords((prev) =>
-            prev.map((item, i) => (i === idx ? { lat: newLat, lon: newLon } : item))
-          );
-        });
-      });
     }
 
-    // 2. Draw Stop DRAGGABLE Circle Markers with Popup Actions
-    stopsList.forEach((stop, idx) => {
-      const stopMarker = L.marker([stop.lat, stop.lon], {
-        draggable: true,
-        icon: L.divIcon({
-          className: "stop-location-marker",
-          html: `<div style="background-color: #ffffff; border: 3px solid #eab308; width: 22px; height: 22px; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); cursor: grab; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: #0f172a;">${idx + 1}</div>`,
-          iconSize: [22, 22],
-          iconAnchor: [11, 11],
-        }),
-      }).addTo(layerGroup);
+    // 2. Clear existing markers
+    shapeMarkersRef.current.forEach((m) => m.remove());
+    shapeMarkersRef.current = [];
+    stopMarkersRef.current.forEach((m) => m.remove());
+    stopMarkersRef.current = [];
 
-      const popupContainer = document.createElement("div");
-      popupContainer.className = "p-1.5 space-y-2 text-xs font-sans min-w-[180px]";
-      popupContainer.innerHTML = `
-        <div style="font-weight: bold; color: #0f172a; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px; display: flex; justify-content: space-between;">
-          <span>🚏 Durak #${idx + 1}</span>
+    // 3. Shape waypoint markers (draggable, red)
+    shapeCoords.forEach((c, idx) => {
+      const el = document.createElement("div");
+      el.style.cssText = `background-color: ${routeColor}; border: 2px solid #ffffff; width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.3); cursor: grab;`;
+      el.title = `Rota Noktası #${idx + 1}`;
+
+      const marker = new maplibregl.Marker({ element: el, draggable: true })
+        .setLngLat([c.lon, c.lat])
+        .addTo(map);
+
+      const popupEl = document.createElement("div");
+      popupEl.className = "p-1.5 space-y-2 text-xs font-sans";
+      popupEl.style.minWidth = "150px";
+      popupEl.innerHTML = `
+        <div style="font-weight: bold; color: #0f172a; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px;">
+          📍 Rota Noktası #${idx + 1}
+        </div>
+        <div style="font-size: 11px; font-family: monospace; color: #64748b;">
+          ${c.lat}, ${c.lon}
+        </div>
+        <button id="del-shape-${idx}" style="width: 100%; padding: 4px 8px; background-color: #e11d48; color: #ffffff; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; font-size: 11px;">
+          🗑️ Noktayı Sil
+        </button>
+      `;
+      const popup = new maplibregl.Popup({ offset: 10, closeButton: true }).setDOMContent(popupEl);
+      marker.setPopup(popup);
+      popup.on("open", () => {
+        const btn = document.getElementById(`del-shape-${idx}`);
+        if (btn) btn.onclick = () => {
+          handleRemoveShapePoint(idx);
+          popup.remove();
+        };
+      });
+      marker.on("dragend", () => {
+        const ll = marker.getLngLat();
+        const newLat = Number(ll.lat.toFixed(6));
+        const newLon = Number(ll.lng.toFixed(6));
+        setShapeCoords((prev) => prev.map((item, i) => (i === idx ? { lat: newLat, lon: newLon } : item)));
+      });
+      shapeMarkersRef.current.push(marker);
+    });
+
+    // 4. Stop markers (draggable, blue with number)
+    stopsList.forEach((stop, idx) => {
+      const el = document.createElement("div");
+      el.style.cssText = `background-color: ${stopColor}; border: 3px solid #ffffff; width: 24px; height: 24px; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); cursor: grab; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; color: #ffffff;`;
+      el.textContent = String(idx + 1);
+
+      const marker = new maplibregl.Marker({ element: el, draggable: true })
+        .setLngLat([stop.lon, stop.lat])
+        .addTo(map);
+
+      const popupEl = document.createElement("div");
+      popupEl.className = "p-1.5 space-y-2 text-xs font-sans";
+      popupEl.style.minWidth = "180px";
+      popupEl.innerHTML = `
+        <div style="font-weight: bold; color: #0f172a; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px;">
+          🚏 Durak #${idx + 1}
         </div>
         <div style="font-weight: bold; color: #0f172a; font-size: 13px;">
           ${stop.name}
@@ -334,49 +394,59 @@ export default function RouteEditorPage() {
           </button>
         </div>
       `;
-
-      stopMarker.bindPopup(popupContainer);
-
-      stopMarker.on("popupopen", () => {
+      const popup = new maplibregl.Popup({ offset: 14, closeButton: true }).setDOMContent(popupEl);
+      marker.setPopup(popup);
+      popup.on("open", () => {
         const renameBtn = document.getElementById(`rename-stop-${idx}`);
-        if (renameBtn) {
-          renameBtn.onclick = () => {
-            const newName = prompt("Yeni Durak Adını Girin:", stop.name);
-            if (newName && newName.trim()) {
-              setStopsList((prev) =>
-                prev.map((s) => (s.stop_id === stop.stop_id ? { ...s, name: newName.trim() } : s))
-              );
-            }
-            map.closePopup();
-          };
-        }
-
+        if (renameBtn) renameBtn.onclick = () => {
+          const newName = prompt("Yeni Durak Adını Girin:", stop.name);
+          if (newName && newName.trim()) {
+            setStopsList((prev) =>
+              prev.map((s) => (s.stop_id === stop.stop_id ? { ...s, name: newName.trim() } : s))
+            );
+          }
+          popup.remove();
+        };
         const delBtn = document.getElementById(`del-stop-${idx}`);
-        if (delBtn) {
-          delBtn.onclick = () => {
-            handleRemoveStop(stop.stop_id);
-            map.closePopup();
-          };
-        }
+        if (delBtn) delBtn.onclick = () => {
+          handleRemoveStop(stop.stop_id);
+          popup.remove();
+        };
       });
-
-      stopMarker.on("dragend", (event: any) => {
-        const newPos = event.target.getLatLng();
-        const newLat = Number(newPos.lat.toFixed(6));
-        const newLon = Number(newPos.lng.toFixed(6));
-
+      marker.on("dragend", () => {
+        const ll = marker.getLngLat();
+        const newLat = Number(ll.lat.toFixed(6));
+        const newLon = Number(ll.lng.toFixed(6));
         setStopsList((prev) =>
           prev.map((s) => (s.stop_id === stop.stop_id ? { ...s, lat: newLat, lon: newLon } : s))
         );
       });
+      stopMarkersRef.current.push(marker);
     });
 
-    // Map Click Listener for adding shape points or stops
-    map.off("click");
-    map.on("click", (e: any) => {
-      const lat = Number(e.latlng.lat.toFixed(6));
-      const lon = Number(e.latlng.lng.toFixed(6));
+    // 5. Fit bounds if we have any data
+    const allPoints: [number, number][] = [
+      ...shapeCoords.map((c) => [c.lon, c.lat] as [number, number]),
+      ...stopsList.map((s) => [s.lon, s.lat] as [number, number]),
+    ];
+    if (allPoints.length >= 1) {
+      const bounds = new maplibregl.LngLatBounds(allPoints[0], allPoints[0]);
+      for (const p of allPoints.slice(1)) bounds.extend(p);
+      try {
+        map.fitBounds(bounds, { padding: 50, duration: 600, maxZoom: 17 });
+      } catch {
+        // ignore invalid bounds
+      }
+    }
 
+    // 6. Click listener for adding shape points or stops
+    if (mapClickHandlerRef.current) {
+      map.off("click", mapClickHandlerRef.current);
+      mapClickHandlerRef.current = null;
+    }
+    const clickHandler = (e: any) => {
+      const lat = Number(e.lngLat.lat.toFixed(6));
+      const lon = Number(e.lngLat.lng.toFixed(6));
       if (editMode === "add_shape") {
         setShapeCoords((prev) => [...prev, { lat, lon }]);
       } else if (editMode === "add_stop") {
@@ -393,7 +463,9 @@ export default function RouteEditorPage() {
           setStopsList((prev) => [...prev, newStop]);
         }
       }
-    });
+    };
+    mapClickHandlerRef.current = clickHandler;
+    map.on("click", clickHandler);
   }
 
   // Remove a shape coordinate point
@@ -406,34 +478,58 @@ export default function RouteEditorPage() {
     setStopsList((prev) => prev.filter((s) => s.stop_id !== stopId));
   };
 
-  // Valhalla Routing Auto-Snap Handler
+  // Valhalla Routing Auto-Snap Handler (via Server Proxy to bypass CORS)
+  // Snap existing shape points to road network using trace_route.
   const handleValhallaSnap = async () => {
-    if (stopsList.length < 2) {
-      alert("Valhalla rota eşitlemesi için en az 2 durak gereklidir!");
+    if (shapeCoords.length < 2) {
+      alert("Snap için en az 2 shape noktası gereklidir!");
       return;
     }
 
     setIsValhallaRouting(true);
     try {
-      const locations = stopsList.map((s) => ({ lat: s.lat, lon: s.lon }));
-      const valhallaReq = {
-        locations,
-        costing: "auto",
-        directions_options: { units: "kilometers" },
+      const shape = shapeCoords.map((c) => ({ lat: c.lat, lon: c.lon }));
+      const proxyPayload = {
+        targetUrl: valhallaUrl.trim(),
+        shape,
+        costing: "bus",
+        costing_options: {
+          bus: {
+            use_highways: 0.1,
+            use_tolls: 0.5,
+            use_ferry: 0,
+          },
+        },
+        shape_match: "map_snap",
+        shape_format: "polyline6",
+        filters: {
+          action: "include",
+        },
+        directed: false,
       };
 
-      const res = await fetch(`${valhallaUrl.replace(/\/$/, "")}/route`, {
+      const res = await fetch("/api/valhalla", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(valhallaReq),
+        body: JSON.stringify(proxyPayload),
       });
 
-      if (!res.ok) {
-        throw new Error(`Valhalla Sunucu Yanıt Vermedi: HTTP ${res.status}`);
+      const valhallaData = await res.json();
+
+      if (!res.ok || valhallaData.error) {
+        throw new Error(valhallaData.message || `Proxy sunucu hatası: HTTP ${res.status}`);
       }
 
-      const valhallaData = await res.json();
-      if (valhallaData.trip && valhallaData.trip.legs) {
+      // trace_route returns a single shape string at the top level
+      if (valhallaData.shape) {
+        const decoded = decodeValhallaPolyline(valhallaData.shape, 6);
+        if (decoded.length > 0) {
+          setShapeCoords(decoded);
+        } else {
+          throw new Error("Valhalla shape decode boş döndü.");
+        }
+      } else if (valhallaData.trip && valhallaData.trip.legs) {
+        // Fallback: some servers return legs[].shape
         const newShapePoints: Array<{ lat: number; lon: number }> = [];
         valhallaData.trip.legs.forEach((leg: any) => {
           if (leg.shape) {
@@ -441,13 +537,14 @@ export default function RouteEditorPage() {
             newShapePoints.push(...decoded);
           }
         });
-
         if (newShapePoints.length > 0) {
           setShapeCoords(newShapePoints);
         }
+      } else {
+        throw new Error("Valhalla yanıtında shape bulunamadı.");
       }
     } catch (err: any) {
-      alert("Valhalla Rota Eşitleme Hatası: " + err.message);
+      alert("Valhalla Shape Snap Hatası: " + err.message);
     } finally {
       setIsValhallaRouting(false);
     }
@@ -697,7 +794,7 @@ export default function RouteEditorPage() {
           </div>
         </div>
 
-        {/* Right Map Canvas Area (Leaflet OpenStreetMap) */}
+        {/* Right Map Canvas Area (MapLibre Vector Tiles via MapTiler) */}
         <div className="flex-1 h-full min-h-[500px] relative bg-slate-100">
           <div ref={mapContainerRef} className="w-full h-full absolute inset-0 z-10" />
 

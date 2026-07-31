@@ -1,5 +1,5 @@
 import { useLoaderData, useSearchParams, useNavigate, useNavigation } from "react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { getCountriesAndCities, getRoutesForCity, getMapRouteDetails } from "../lib/db-operations.server";
 import {
   MapPin,
@@ -22,33 +22,59 @@ export async function loader({ request }: { request: Request }) {
   const selectedCityId = url.searchParams.get("city") || "";
   const selectedRouteId = url.searchParams.get("route") || "";
 
+  // When both city and route are known, run all queries in parallel
+  if (selectedCityId && selectedRouteId) {
+    const [cities, routes, routeDetails] = await Promise.all([
+      getCountriesAndCities(),
+      getRoutesForCity(selectedCityId),
+      getMapRouteDetails(selectedRouteId),
+    ]);
+
+    const activeCityObj = cities.find((c: any) => c.city_id === selectedCityId) || null;
+
+    return {
+      cities,
+      routes,
+      activeCityId: selectedCityId,
+      activeRouteId: selectedRouteId,
+      activeCityObj,
+      routeDetails,
+    };
+  }
+
+  // Otherwise, resolve IDs sequentially as needed
   const cities = await getCountriesAndCities();
-  
-  // Default to first city if none selected
   const activeCityId = selectedCityId || (cities.length > 0 ? cities[0].city_id : "");
-  
+
   let routes: any[] = [];
+  let routeDetails = null;
+
   if (activeCityId) {
     routes = await getRoutesForCity(activeCityId);
+    const activeRouteId = selectedRouteId || (routes.length > 0 ? routes[0].route_id : "");
+    if (activeRouteId) {
+      routeDetails = await getMapRouteDetails(activeRouteId);
+    }
+
+    const activeCityObj = cities.find((c: any) => c.city_id === activeCityId) || null;
+
+    return {
+      cities,
+      routes,
+      activeCityId,
+      activeRouteId,
+      activeCityObj,
+      routeDetails,
+    };
   }
-
-  // Default to first route if none selected and routes exist
-  const activeRouteId = selectedRouteId || (routes.length > 0 ? routes[0].route_id : "");
-
-  let routeDetails = null;
-  if (activeRouteId) {
-    routeDetails = await getMapRouteDetails(activeRouteId);
-  }
-
-  const activeCityObj = cities.find((c: any) => c.city_id === activeCityId) || null;
 
   return {
     cities,
-    routes,
-    activeCityId,
-    activeRouteId,
-    activeCityObj,
-    routeDetails,
+    routes: [],
+    activeCityId: "",
+    activeRouteId: "",
+    activeCityObj: null,
+    routeDetails: null,
   };
 }
 
@@ -108,15 +134,110 @@ export default function MapPage() {
     setSearchParams({ city: activeCityId, route: routeId });
   };
 
+  // Render shapes and stops on Leaflet map
+  const renderLeafletLayers = useCallback(() => {
+    const map = mapInstanceRef.current;
+    const L = leafletRef.current;
+    if (!map || !L || !routeDetails) return;
+
+    if (layerGroupRef.current) {
+      layerGroupRef.current.clearLayers();
+    } else {
+      layerGroupRef.current = L.layerGroup().addTo(map);
+    }
+
+    const layerGroup = layerGroupRef.current;
+    const { route, shapes, stops } = routeDetails;
+    const routeColor = "#dc2626"; // Kırmızı rota çizgisi
+    const stopColor = "#2563eb";  // Mavi duraklar
+
+    const isLoop = route.route_pattern === "loop";
+    const targetDir = isLoop ? 0 : (selectedDirection === 0 ? 1 : selectedDirection);
+
+    // Filter shape and stops with robust fallback
+    let shape = shapes.find((s: any) => Number(s.direction) === targetDir);
+    if (!shape && shapes.length > 0) shape = shapes[0];
+
+    let filteredStops = stops.filter((s: any) => Number(s.direction) === targetDir);
+    if (filteredStops.length === 0 && stops.length > 0) filteredStops = stops;
+
+    let hasBounds = false;
+    let boundsGroup = L.featureGroup();
+
+    // 1. Draw Route Polyline Shape (Kırmızı)
+    if (shape && shape.coordinates && Array.isArray(shape.coordinates) && shape.coordinates.length > 0) {
+      const latLons = shape.coordinates
+        .filter((c: any) => c && c.lat != null && c.lon != null)
+        .map((c: any) => [Number(c.lat), Number(c.lon)]);
+
+      if (latLons.length > 0) {
+        // Outer white casing line
+        L.polyline(latLons, {
+          color: "#ffffff",
+          weight: 9,
+          opacity: 0.9,
+          lineCap: "round",
+          lineJoin: "round",
+        }).addTo(layerGroup);
+
+        // Main RED route line
+        const line = L.polyline(latLons, {
+          color: routeColor,
+          weight: 5,
+          opacity: 1,
+          lineCap: "round",
+          lineJoin: "round",
+        }).addTo(layerGroup);
+
+        line.addTo(boundsGroup);
+        hasBounds = true;
+      }
+    }
+
+    // 2. Draw Stop Circle Markers (Mavi)
+    filteredStops.forEach((stop: any) => {
+      if (stop.lat == null || stop.lon == null) return;
+      const lat = Number(stop.lat);
+      const lon = Number(stop.lon);
+
+      const marker = L.circleMarker([lat, lon], {
+        radius: 7,
+        fillColor: stopColor,
+        color: "#ffffff",
+        weight: 2,
+        fillOpacity: 1,
+      }).addTo(layerGroup);
+
+      marker.bindTooltip(`<b>#${stop.sequence} - ${stop.stop_name}</b>`, {
+        permanent: false,
+        direction: "top",
+      });
+
+      marker.on("click", () => {
+        setSelectedStop(stop);
+      });
+
+      marker.addTo(boundsGroup);
+      hasBounds = true;
+    });
+
+    // 3. Fit Map View to Bounds
+    if (hasBounds) {
+      const bounds = boundsGroup.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [50, 50] });
+      }
+    }
+  }, [routeDetails, selectedDirection]);
+
   // Initialize Leaflet Map
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
-    let L: any;
     let map: any;
 
     import("leaflet").then((module) => {
-      L = module.default;
+      const L = module.default;
       leafletRef.current = L;
 
       // Fix Leaflet default marker icons
@@ -131,7 +252,7 @@ export default function MapPage() {
       const centerLon = activeCityObj ? Number(activeCityObj.lon) : 29.06;
       const defaultZoom = activeCityObj?.default_zoom || 12;
 
-      // Clean up previous map if exists
+      // Clean up previous map instance if exists
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
@@ -143,7 +264,7 @@ export default function MapPage() {
         zoomControl: true,
       });
 
-      // Standard Official OpenStreetMap Raster Tiles Layer
+      // Standard High-Detail OpenStreetMap Tiles
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -152,12 +273,11 @@ export default function MapPage() {
       mapInstanceRef.current = map;
       layerGroupRef.current = L.layerGroup().addTo(map);
 
-      // Invalidate size after DOM render
       setTimeout(() => {
         if (map) map.invalidateSize();
       }, 150);
 
-      renderLeafletLayers(map, L);
+      renderLeafletLayers();
     });
 
     return () => {
@@ -166,85 +286,12 @@ export default function MapPage() {
         mapInstanceRef.current = null;
       }
     };
-  }, [activeCityId]);
+  }, [activeCityId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Update Layers when activeRouteId, effectiveDirection or routeDetails change
+  // Re-render layers when routeDetails or direction changes
   useEffect(() => {
-    const map = mapInstanceRef.current;
-    const L = leafletRef.current;
-    if (!map || !L) return;
-
-    renderLeafletLayers(map, L);
-  }, [routeDetails, effectiveDirection]);
-
-  function renderLeafletLayers(map: any, L: any) {
-    if (!map || !L || !routeDetails) return;
-
-    if (layerGroupRef.current) {
-      layerGroupRef.current.clearLayers();
-    } else {
-      layerGroupRef.current = L.layerGroup().addTo(map);
-    }
-
-    const layerGroup = layerGroupRef.current;
-    const { route, shapes, stops } = routeDetails;
-    const routeColor = route.color || "#2563eb";
-
-    const isLoop = route.route_pattern === "loop";
-    const targetDir = isLoop ? 0 : (selectedDirection === 0 ? 1 : selectedDirection);
-
-    const shape = shapes.find((s: any) => Number(s.direction) === targetDir) || shapes[0];
-    const filteredStops = stops.filter((s: any) => Number(s.direction) === targetDir);
-
-    // 1. Draw Route Shape Polyline
-    if (shape && shape.coordinates && shape.coordinates.length > 0) {
-      const latLons = shape.coordinates.map((c: any) => [Number(c.lat), Number(c.lon)]);
-
-      // Outer white casing for high visibility
-      L.polyline(latLons, {
-        color: "#ffffff",
-        weight: 9,
-        opacity: 0.9,
-        lineCap: "round",
-        lineJoin: "round",
-      }).addTo(layerGroup);
-
-      // Colored route line
-      const line = L.polyline(latLons, {
-        color: routeColor,
-        weight: 5,
-        opacity: 1,
-        lineCap: "round",
-        lineJoin: "round",
-      }).addTo(layerGroup);
-
-      // Fit map view bounds
-      const bounds = line.getBounds();
-      if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [50, 50] });
-      }
-    }
-
-    // 2. Draw Stop Circle Markers
-    filteredStops.forEach((stop: any) => {
-      const marker = L.circleMarker([Number(stop.lat), Number(stop.lon)], {
-        radius: 7,
-        fillColor: "#ffffff",
-        color: routeColor,
-        weight: 3,
-        fillOpacity: 1,
-      }).addTo(layerGroup);
-
-      marker.bindTooltip(`<b>#${stop.sequence} - ${stop.stop_name}</b>`, {
-        permanent: false,
-        direction: "top",
-      });
-
-      marker.on("click", () => {
-        setSelectedStop(stop);
-      });
-    });
-  }
+    renderLeafletLayers();
+  }, [renderLeafletLayers]);
 
   const filteredRoutesList = routes.filter((r) =>
     routeSearchText

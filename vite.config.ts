@@ -7,4 +7,17 @@ export default defineConfig({
   resolve: {
     tsconfigPaths: true,
   },
+  optimizeDeps: {
+    exclude: ["maplibre-gl"],
+  },
+  server: {
+    proxy: {
+      "/maptiler": {
+        target: "https://api.maptiler.com",
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => "",
+      },
+    },
+  },
 });

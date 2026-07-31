@@ -4,8 +4,8 @@ import type { EntityName, ImportConflictAnalysis, DiffResult } from "./types";
 // =====================================================================
 // DASHBOARD STATS
 // =====================================================================
-export async function getDashboardStats() {
-  const counts = await query<{
+export async function getTableCounts() {
+  const res = await query<{
     countries: number;
     cities: number;
     agencies: number;
@@ -29,38 +29,40 @@ export async function getDashboardStats() {
       (SELECT COUNT(*)::int FROM holiday) as holidays,
       (SELECT COUNT(*)::int FROM shape) as shapes
   `);
+  return res.rows[0];
+}
 
-  const citySummary = await query<{
-    city_id: string;
-    city_name: string;
-    country_name: string;
-    routes_count: number;
-    stops_count: number;
-  }>(`
-    SELECT 
-      c.city_id,
-      c.name as city_name,
-      co.name as country_name,
-      COUNT(DISTINCT r.route_id)::int as routes_count,
-      COUNT(DISTINCT s.stop_id)::int as stops_count
-    FROM city c
-    JOIN country co ON c.country_id = co.country_id
-    LEFT JOIN agency a ON a.city_id = c.city_id
-    LEFT JOIN route r ON r.agency_id = a.agency_id
-    LEFT JOIN stop s ON s.city_id = c.city_id
-    GROUP BY c.city_id, c.name, co.name
-    ORDER BY c.name ASC
-  `);
-
-  const vehicleStats = await query<{ vehicle_type: string; count: number }>(`
-    SELECT vehicle_type, COUNT(*)::int as count 
-    FROM route 
-    GROUP BY vehicle_type 
-    ORDER BY count DESC
-  `);
+export async function getDashboardStats() {
+  // Run all 3 queries in parallel
+  const [counts, citySummary, vehicleStats] = await Promise.all([
+    getTableCounts(),
+    query<{
+      city_id: string;
+      city_name: string;
+      country_name: string;
+      routes_count: number;
+      stops_count: number;
+    }>(`
+      SELECT 
+        c.city_id,
+        c.name as city_name,
+        co.name as country_name,
+        (SELECT COUNT(*)::int FROM route r JOIN agency a ON r.agency_id = a.agency_id WHERE a.city_id = c.city_id) as routes_count,
+        (SELECT COUNT(*)::int FROM stop s WHERE s.city_id = c.city_id) as stops_count
+      FROM city c
+      JOIN country co ON c.country_id = co.country_id
+      ORDER BY c.name ASC
+    `),
+    query<{ vehicle_type: string; count: number }>(`
+      SELECT vehicle_type, COUNT(*)::int as count 
+      FROM route 
+      GROUP BY vehicle_type 
+      ORDER BY count DESC
+    `),
+  ]);
 
   return {
-    totals: counts.rows[0] || {
+    totals: counts || {
       countries: 0,
       cities: 0,
       agencies: 0,
@@ -111,49 +113,73 @@ export async function getRoutesForCity(cityId: string) {
 }
 
 export async function getMapRouteDetails(routeId: string) {
-  // 1. Route info
-  const routeRes = await query(`SELECT * FROM route WHERE route_id = $1`, [routeId]);
+  // Run all queries in parallel for maximum speed
+  const [routeRes, shapesRes, stopsRes, tripsRes] = await Promise.all([
+    // 1. Route info
+    query(`SELECT * FROM route WHERE route_id = $1`, [routeId]),
+    // 2. Shapes (geometries)
+    query(
+      `SELECT shape_id, route_id, direction, coordinates FROM shape WHERE route_id = $1`,
+      [routeId]
+    ),
+    // 3. Route Stops
+    query(
+      `
+      SELECT 
+        rs.route_id, rs.direction, rs.sequence, rs.is_first_stop, rs.is_last_stop,
+        s.stop_id, s.city_id, s.name as stop_name, s.lat, s.lon, s.location_type,
+        s.wheelchair_accessible, s.shelter_type, s.has_real_time_display
+      FROM route_stop rs
+      JOIN stop s ON rs.stop_id = s.stop_id
+      WHERE rs.route_id = $1
+      ORDER BY rs.direction, rs.sequence
+    `,
+      [routeId]
+    ),
+    // 4. Trips & timetable summary
+    query(
+      `
+      SELECT t.trip_id, t.direction, t.service_type,
+             st.stop_id, st.sequence, st.departure_time
+      FROM trip t
+      JOIN stop_time st ON t.trip_id = st.trip_id
+      WHERE t.route_id = $1
+      ORDER BY t.direction, t.service_type, st.sequence, st.departure_secs
+    `,
+      [routeId]
+    ),
+  ]);
+
   const route = routeRes.rows[0];
   if (!route) return null;
 
-  // 2. Shapes (geometries)
-  const shapesRes = await query(
-    `SELECT shape_id, route_id, direction, coordinates FROM shape WHERE route_id = $1`,
-    [routeId]
-  );
+  const shapes = shapesRes.rows.map((s: any) => {
+    let coords = s.coordinates;
+    if (typeof coords === "string") {
+      try {
+        coords = JSON.parse(coords);
+      } catch (e) {
+        coords = [];
+      }
+    }
+    return {
+      ...s,
+      direction: Number(s.direction),
+      coordinates: Array.isArray(coords) ? coords : [],
+    };
+  });
 
-  // 3. Route Stops
-  const stopsRes = await query(
-    `
-    SELECT 
-      rs.route_id, rs.direction, rs.sequence, rs.is_first_stop, rs.is_last_stop,
-      s.stop_id, s.city_id, s.name as stop_name, s.lat, s.lon, s.location_type,
-      s.wheelchair_accessible, s.shelter_type, s.has_real_time_display
-    FROM route_stop rs
-    JOIN stop s ON rs.stop_id = s.stop_id
-    WHERE rs.route_id = $1
-    ORDER BY rs.direction, rs.sequence
-  `,
-    [routeId]
-  );
-
-  // 4. Trips & timetable summary
-  const tripsRes = await query(
-    `
-    SELECT t.trip_id, t.direction, t.service_type,
-           st.stop_id, st.sequence, st.departure_time
-    FROM trip t
-    JOIN stop_time st ON t.trip_id = st.trip_id
-    WHERE t.route_id = $1
-    ORDER BY t.direction, t.service_type, st.sequence, st.departure_secs
-  `,
-    [routeId]
-  );
+  const stops = stopsRes.rows.map((s: any) => ({
+    ...s,
+    direction: Number(s.direction),
+    lat: Number(s.lat),
+    lon: Number(s.lon),
+  }));
 
   return {
     route,
-    shapes: shapesRes.rows,
-    stops: stopsRes.rows,
+    shapes,
+    stops,
     trips: tripsRes.rows,
   };
 }
@@ -295,8 +321,10 @@ export async function getEntityData(entity: EntityName, page = 1, limit = 50, se
 
   if (search) {
     const searchPattern = `%${search}%`;
-    const countRes = await query(countText, [searchPattern]);
-    const dataRes = await query(text, [searchPattern, limit, offset]);
+    const [countRes, dataRes] = await Promise.all([
+      query(countText, [searchPattern]),
+      query(text, [searchPattern, limit, offset]),
+    ]);
     return {
       total: countRes.rows[0].count,
       data: dataRes.rows,
@@ -304,8 +332,10 @@ export async function getEntityData(entity: EntityName, page = 1, limit = 50, se
       limit,
     };
   } else {
-    const countRes = await query(countText);
-    const dataRes = await query(text, [limit, offset]);
+    const [countRes, dataRes] = await Promise.all([
+      query(countText),
+      query(text, [limit, offset]),
+    ]);
     return {
       total: countRes.rows[0].count,
       data: dataRes.rows,

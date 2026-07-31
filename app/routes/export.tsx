@@ -1,11 +1,11 @@
 import { useLoaderData } from "react-router";
 import { useState } from "react";
-import { getDashboardStats } from "../lib/db-operations.server";
+import { getTableCounts } from "../lib/db-operations.server";
 import { DownloadCloud, FileJson, CheckCircle2, Archive, Loader2 } from "lucide-react";
 
 export async function loader() {
-  const stats = await getDashboardStats();
-  return { totals: stats.totals };
+  const totals = await getTableCounts();
+  return { totals };
 }
 
 export default function ExportPage() {

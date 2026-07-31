@@ -10,4 +10,5 @@ export default [
   route("settings", "routes/settings.tsx"),
   route("api/export-zip", "routes/api.export-zip.ts"),
   route("api/import-stream", "routes/api.import-stream.ts"),
+  route("api/valhalla", "routes/api.valhalla.ts"),
 ] satisfies RouteConfig;
