@@ -21,31 +21,49 @@ CREATE EXTENSION IF NOT EXISTS btree_gist; -- exclusion constraint'ler için (op
 -- ENUM TİPLERİ
 -- ---------------------------------------------------------------------
 
-CREATE TYPE vehicle_type_enum AS ENUM (
-  'bus','tram','metro','rail','ferry','cable_tram','gondola',
-  'funicular','trolleybus','monorail','minibus','coach','water_taxi'
-);
+DO $$ BEGIN
+  CREATE TYPE vehicle_type_enum AS ENUM (
+    'bus','tram','metro','rail','ferry','cable_tram','gondola',
+    'funicular','trolleybus','monorail','minibus','coach','water_taxi'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE route_pattern_enum AS ENUM ('round_trip','loop');
-CREATE TYPE stop_mode_enum AS ENUM ('fixed','flexible');
+DO $$ BEGIN
+  CREATE TYPE route_pattern_enum AS ENUM ('round_trip','loop');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE direction_enum AS SMALLINT; -- bilgi amaçlı; gerçek tip aşağıda smallint + CHECK
+DO $$ BEGIN
+  CREATE TYPE stop_mode_enum AS ENUM ('fixed','flexible');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE weekday_enum AS ENUM (
-  'monday','tuesday','wednesday','thursday','friday','saturday','sunday'
-);
+DO $$ BEGIN
+  CREATE TYPE weekday_enum AS ENUM (
+    'monday','tuesday','wednesday','thursday','friday','saturday','sunday'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE location_type_enum AS ENUM ('stop','station','entrance','generic_node');
-CREATE TYPE shelter_type_enum AS ENUM ('none','open','closed','heated');
-CREATE TYPE fare_type_enum AS ENUM ('flat');
-CREATE TYPE payment_method_enum AS ENUM (
-  'cash','smart_card','credit_card','mobile','contactless','qr'
-);
+DO $$ BEGIN
+  CREATE TYPE location_type_enum AS ENUM ('stop','station','entrance','generic_node');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE shelter_type_enum AS ENUM ('none','open','closed','heated');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE fare_type_enum AS ENUM ('flat');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE payment_method_enum AS ENUM (
+    'cash','smart_card','credit_card','mobile','contactless','qr'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ---------------------------------------------------------------------
 -- 1) COUNTRY
 -- ---------------------------------------------------------------------
-CREATE TABLE country (
+CREATE TABLE IF NOT EXISTS country (
   country_id   TEXT PRIMARY KEY,                 -- ISO 3166-1 alpha-2 önerilir
   name         TEXT NOT NULL,
   updated_at   TIMESTAMPTZ NOT NULL,
@@ -55,7 +73,7 @@ CREATE TABLE country (
 -- ---------------------------------------------------------------------
 -- 2) CITY
 -- ---------------------------------------------------------------------
-CREATE TABLE city (
+CREATE TABLE IF NOT EXISTS city (
   city_id       TEXT PRIMARY KEY,
   slug          TEXT NOT NULL UNIQUE
                   CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
@@ -90,7 +108,7 @@ CREATE TABLE city (
 -- ---------------------------------------------------------------------
 -- 3) AGENCY
 -- ---------------------------------------------------------------------
-CREATE TABLE agency (
+CREATE TABLE IF NOT EXISTS agency (
   agency_id   TEXT PRIMARY KEY,
   city_id     TEXT NOT NULL REFERENCES city(city_id)
                 ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -104,7 +122,7 @@ CREATE TABLE agency (
 -- ---------------------------------------------------------------------
 -- 4) FARE
 -- ---------------------------------------------------------------------
-CREATE TABLE fare (
+CREATE TABLE IF NOT EXISTS fare (
   fare_id            TEXT PRIMARY KEY,
   agency_id          TEXT NOT NULL REFERENCES agency(agency_id)
                         ON UPDATE CASCADE ON DELETE CASCADE,
@@ -119,12 +137,12 @@ CREATE TABLE fare (
   updated_at         TIMESTAMPTZ NOT NULL,
   source             TEXT
 );
-CREATE INDEX idx_fare_agency ON fare(agency_id);
+CREATE INDEX IF NOT EXISTS idx_fare_agency ON fare(agency_id);
 
 -- ---------------------------------------------------------------------
 -- 5) HOLIDAY
 -- ---------------------------------------------------------------------
-CREATE TABLE holiday (
+CREATE TABLE IF NOT EXISTS holiday (
   date        DATE NOT NULL,
   country_id  TEXT NOT NULL REFERENCES country(country_id)
                 ON UPDATE CASCADE ON DELETE CASCADE,
@@ -134,12 +152,12 @@ CREATE TABLE holiday (
   source      TEXT,
   PRIMARY KEY (country_id, date)
 );
-CREATE INDEX idx_holiday_date ON holiday(date);
+CREATE INDEX IF NOT EXISTS idx_holiday_date ON holiday(date);
 
 -- ---------------------------------------------------------------------
 -- 6) ROUTE
 -- ---------------------------------------------------------------------
-CREATE TABLE route (
+CREATE TABLE IF NOT EXISTS route (
   route_id      TEXT PRIMARY KEY,
   agency_id     TEXT NOT NULL REFERENCES agency(agency_id)
                   ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -154,8 +172,8 @@ CREATE TABLE route (
   updated_at    TIMESTAMPTZ NOT NULL,
   source        TEXT
 );
-CREATE INDEX idx_route_agency ON route(agency_id);
-CREATE INDEX idx_route_fare ON route(fare_id);
+CREATE INDEX IF NOT EXISTS idx_route_agency ON route(agency_id);
+CREATE INDEX IF NOT EXISTS idx_route_fare ON route(fare_id);
 
 -- Route'un fare'i, route'un kendi agency'sinden farklı bir agency'e
 -- ait OLMAMALI. JSON şemada zorlanmıyor -> burada trigger ile garanti ediyoruz.
@@ -172,6 +190,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS route_fare_agency_check ON route;
 CREATE TRIGGER route_fare_agency_check
 BEFORE INSERT OR UPDATE ON route
 FOR EACH ROW EXECUTE FUNCTION trg_route_fare_agency_match();
@@ -179,7 +198,7 @@ FOR EACH ROW EXECUTE FUNCTION trg_route_fare_agency_match();
 -- ---------------------------------------------------------------------
 -- 7) STOP  (+ platforms alt tablosu)
 -- ---------------------------------------------------------------------
-CREATE TABLE stop (
+CREATE TABLE IF NOT EXISTS stop (
   stop_id                  TEXT PRIMARY KEY,
   city_id                  TEXT NOT NULL REFERENCES city(city_id)
                              ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -209,7 +228,7 @@ CREATE TABLE stop (
   source                   TEXT
 );
 
-CREATE TABLE stop_platform (
+CREATE TABLE IF NOT EXISTS stop_platform (
   platform_id             TEXT NOT NULL,
   stop_id                 TEXT NOT NULL REFERENCES stop(stop_id)
                              ON UPDATE CASCADE ON DELETE CASCADE,
@@ -239,7 +258,7 @@ CREATE TABLE stop_platform (
 -- ---------------------------------------------------------------------
 -- 8) ROUTE_STOP
 -- ---------------------------------------------------------------------
-CREATE TABLE route_stop (
+CREATE TABLE IF NOT EXISTS route_stop (
   route_id      TEXT NOT NULL REFERENCES route(route_id)
                   ON UPDATE CASCADE ON DELETE CASCADE,
   direction     SMALLINT NOT NULL CHECK (direction IN (0,1,2)),
@@ -253,7 +272,7 @@ CREATE TABLE route_stop (
   PRIMARY KEY (route_id, direction, sequence),
   UNIQUE (route_id, direction, stop_id)   -- aynı durak aynı yönde bir kez
 );
-CREATE INDEX idx_route_stop_stop ON route_stop(stop_id);
+CREATE INDEX IF NOT EXISTS idx_route_stop_stop ON route_stop(stop_id);
 
 -- route_pattern <-> direction tutarlılığı (loop => 0, round_trip => 1/2)
 CREATE OR REPLACE FUNCTION trg_route_stop_direction_match() RETURNS TRIGGER AS $$
@@ -270,6 +289,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS route_stop_direction_check ON route_stop;
 CREATE TRIGGER route_stop_direction_check
 BEFORE INSERT OR UPDATE ON route_stop
 FOR EACH ROW EXECUTE FUNCTION trg_route_stop_direction_match();
@@ -277,7 +297,7 @@ FOR EACH ROW EXECUTE FUNCTION trg_route_stop_direction_match();
 -- ---------------------------------------------------------------------
 -- 9) SHAPE
 -- ---------------------------------------------------------------------
-CREATE TABLE shape (
+CREATE TABLE IF NOT EXISTS shape (
   shape_id    TEXT PRIMARY KEY,
   route_id    TEXT NOT NULL REFERENCES route(route_id)
                 ON UPDATE CASCADE ON DELETE CASCADE,
@@ -302,6 +322,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS shape_build_geom ON shape;
 CREATE TRIGGER shape_build_geom
 BEFORE INSERT OR UPDATE ON shape
 FOR EACH ROW EXECUTE FUNCTION trg_shape_build_geom();
@@ -320,6 +341,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS shape_direction_check ON shape;
 CREATE TRIGGER shape_direction_check
 BEFORE INSERT OR UPDATE ON shape
 FOR EACH ROW EXECUTE FUNCTION trg_shape_direction_match();
@@ -327,7 +349,7 @@ FOR EACH ROW EXECUTE FUNCTION trg_shape_direction_match();
 -- ---------------------------------------------------------------------
 -- 10) TRIP
 -- ---------------------------------------------------------------------
-CREATE TABLE trip (
+CREATE TABLE IF NOT EXISTS trip (
   trip_id       TEXT PRIMARY KEY,
   route_id      TEXT NOT NULL REFERENCES route(route_id)
                   ON UPDATE CASCADE ON DELETE CASCADE,
@@ -336,28 +358,18 @@ CREATE TABLE trip (
   updated_at    TIMESTAMPTZ NOT NULL,
   source        TEXT
 );
-CREATE INDEX idx_trip_route_dir_service ON trip(route_id, direction, service_type);
-
--- NOT: trip için satır-bazlı "route_pattern <-> direction" trigger'ı BİLEREK
--- konulmadı. 120k+ trip'lik bulk INSERT'te her satır için route tablosuna
--- SELECT atan bir trigger ETL süresini 10-15x yavaşlatır. Aynı kural zaten
--- route_stop ve shape seviyesinde satır-bazlı trigger ile zorlanıyor; trip
--- pratikte her zaman var olan bir route_stop/shape kombinasyonunu referans
--- aldığından ek kontrol veri bütünlüğüne bir şey katmıyor, sadece maliyet
--- ekliyor. İstersen ETL sonrası tek seferlik bir doğrulama sorgusu ile
--- kontrol edebilirsin (bkz. dosya sonundaki "ETL SONRASI DOĞRULAMA" bölümü).
+CREATE INDEX IF NOT EXISTS idx_trip_route_dir_service ON trip(route_id, direction, service_type);
 
 -- ---------------------------------------------------------------------
 -- 11) STOP_TIME
 -- ---------------------------------------------------------------------
-CREATE TABLE stop_time (
+CREATE TABLE IF NOT EXISTS stop_time (
   trip_id         TEXT NOT NULL REFERENCES trip(trip_id)
                     ON UPDATE CASCADE ON DELETE CASCADE,
   stop_id         TEXT NOT NULL REFERENCES stop(stop_id)
                     ON UPDATE CASCADE ON DELETE RESTRICT,
   sequence        INTEGER NOT NULL CHECK (sequence >= 1),
   departure_time  TEXT CHECK (departure_time IS NULL OR departure_time ~ '^[0-9]{1,2}:[0-5][0-9]:[0-5][0-9]$'),
-  -- 24 saati aşabilen (25:30:00 gibi) saatleri sıralama/sorgulama için saniyeye çeviren üretilmiş kolon
   departure_secs  INTEGER GENERATED ALWAYS AS (
                      CASE WHEN departure_time IS NOT NULL THEN
                        split_part(departure_time,':',1)::int * 3600
@@ -368,39 +380,23 @@ CREATE TABLE stop_time (
   updated_at      TIMESTAMPTZ NOT NULL,
   source          TEXT,
   PRIMARY KEY (trip_id, sequence),
-  -- İlk durak (sequence=1) için departure_time zorunlu.
-  -- Trigger yerine CHECK constraint: PL/pgSQL fonksiyon çağrısı ve tabloya
-  -- ekstra SELECT yok, doğrudan satırın kendi kolonlarına bakıyor -> bulk
-  -- COPY/INSERT'te satır başına ek maliyet neredeyse sıfır.
   CONSTRAINT check_first_departure CHECK (sequence <> 1 OR departure_time IS NOT NULL)
 );
-CREATE INDEX idx_stop_time_stop ON stop_time(stop_id);
--- Tekil departure_secs index'i kaldırıldı, yerine aşağıdaki kompozit
--- (stop_id, departure_secs) index'i kondu -> "X durağının Y saatinden
--- sonraki kalkışları" sorgusu index-only scan ile karşılanır.
-CREATE INDEX idx_stop_time_stop_dept ON stop_time(stop_id, departure_secs);
+CREATE INDEX IF NOT EXISTS idx_stop_time_stop ON stop_time(stop_id);
+CREATE INDEX IF NOT EXISTS idx_stop_time_stop_dept ON stop_time(stop_id, departure_secs);
 
--- =====================================================================
--- İNDEX STRATEJİSİ ÖZETİ
--- =====================================================================
--- * Tüm FK kolonlarında btree index (yukarıda tanımlı) -> JOIN performansı
--- * GEOGRAPHY kolonları GENERATED STORED -> otomatik güncellenir,
---   aşağıdaki GiST indexleri mekansal sorguları (ST_DWithin, ST_Contains,
---   "bana en yakın durağı bul" vb.) hızlandırır.
-CREATE INDEX idx_city_center_geom   ON city  USING GIST (center_geom);
-CREATE INDEX idx_city_bounds_geom   ON city  USING GIST (bounds_geom);
-CREATE INDEX idx_stop_geom          ON stop  USING GIST (geom);
-CREATE INDEX idx_stop_platform_geom ON stop_platform USING GIST (geom);
-CREATE INDEX idx_shape_geom         ON shape USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_city_center_geom   ON city  USING GIST (center_geom);
+CREATE INDEX IF NOT EXISTS idx_city_bounds_geom   ON city  USING GIST (bounds_geom);
+CREATE INDEX IF NOT EXISTS idx_stop_geom          ON stop  USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_stop_platform_geom ON stop_platform USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_shape_geom         ON shape USING GIST (geom);
 
--- * İsimle arama (autocomplete / arama kutusu) için trigram index
-CREATE INDEX idx_stop_name_trgm  ON stop  USING GIN (name gin_trgm_ops);
-CREATE INDEX idx_route_name_trgm ON route USING GIN (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_stop_name_trgm  ON stop  USING GIN (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_route_name_trgm ON route USING GIN (name gin_trgm_ops);
 
--- * city_id bazlı filtreleme çok sık olacağı için (API: /cities/{slug}/...)
-CREATE INDEX idx_stop_city   ON stop(city_id);
-CREATE INDEX idx_agency_city ON agency(city_id);
-CREATE INDEX idx_city_country ON city(country_id);
+CREATE INDEX IF NOT EXISTS idx_stop_city   ON stop(city_id);
+CREATE INDEX IF NOT EXISTS idx_agency_city ON agency(city_id);
+CREATE INDEX IF NOT EXISTS idx_city_country ON city(country_id);
 
 -- * "Bu hattın bugünkü seferleri" gibi sorgular için kompozit index
 --   (trip tablosunda zaten idx_trip_route_dir_service var, stop_time'da
