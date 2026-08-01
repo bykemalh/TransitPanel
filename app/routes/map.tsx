@@ -15,6 +15,7 @@ import {
   Loader2,
   RotateCw,
   Calendar,
+  Focus,
 } from "lucide-react";
 
 export async function loader({ request }: { request: Request }) {
@@ -111,6 +112,7 @@ export default function MapPage() {
   const mapInstanceRef = useRef<any>(null);
   const leafletRef = useRef<any>(null);
   const layerGroupRef = useRef<any>(null);
+  const lastFittedKeyRef = useRef<string>("");
   
   const [selectedDirection, setSelectedDirection] = useState<number>(1);
   const [selectedStop, setSelectedStop] = useState<any>(null);
@@ -221,14 +223,32 @@ export default function MapPage() {
       hasBounds = true;
     });
 
-    // 3. Fit Map View to Bounds
-    if (hasBounds) {
+    // 3. Fit Map View to Bounds ONLY when city, route, or direction changes
+    const currentKey = `${activeCityId}_${activeRouteId}_${targetDir}`;
+    if (lastFittedKeyRef.current !== currentKey && hasBounds) {
+      const bounds = boundsGroup.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [50, 50] });
+        lastFittedKeyRef.current = currentKey;
+      }
+    }
+  }, [routeDetails, selectedDirection, activeCityId, activeRouteId]);
+
+  // Recenter map manually
+  const handleRecenterMap = () => {
+    const map = mapInstanceRef.current;
+    const L = leafletRef.current;
+    if (!map || !L || !layerGroupRef.current) return;
+
+    const layers = layerGroupRef.current.getLayers();
+    if (layers.length > 0) {
+      const boundsGroup = L.featureGroup(layers);
       const bounds = boundsGroup.getBounds();
       if (bounds.isValid()) {
         map.fitBounds(bounds, { padding: [50, 50] });
       }
     }
-  }, [routeDetails, selectedDirection]);
+  };
 
   // Initialize Leaflet Map
   useEffect(() => {
@@ -624,6 +644,18 @@ export default function MapPage() {
       {/* Right Map Canvas Area */}
       <div className="flex-1 h-full min-h-[500px] relative bg-slate-100">
         <div ref={mapContainerRef} className="w-full h-full min-h-[500px] absolute inset-0 z-10" />
+
+        {/* Floating Top Controls Overlay */}
+        <div className="absolute top-4 right-4 z-30 flex items-center gap-2">
+          <button
+            onClick={handleRecenterMap}
+            title="Haritayı Rota ve Duraklara Odakla"
+            className="bg-white/95 backdrop-blur-md hover:bg-slate-50 text-slate-800 px-3.5 py-2 rounded-full shadow-lg border border-slate-200 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+          >
+            <Focus className="w-4 h-4 text-blue-600" />
+            <span>Haritayı Ortala</span>
+          </button>
+        </div>
 
         {/* Loading Indicator Floating Banner */}
         {isLoading && (

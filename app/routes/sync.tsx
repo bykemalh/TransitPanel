@@ -1,8 +1,5 @@
 import { useLoaderData, useSearchParams, useSubmit, useActionData, useNavigation } from "react-router";
-import { useEffect, useRef, useState } from "react";
-import * as maplibregl from "maplibre-gl";
-import type { Map as MlMap, Marker, Popup, StyleSpecification } from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { getCountriesAndCities, getRoutesForCity, getMapRouteDetails, saveRouteEditorData } from "../lib/db-operations.server";
 import {
   MapPin,
@@ -21,6 +18,13 @@ import {
   Move,
   CheckCircle2,
   AlertOctagon,
+  Focus,
+  Play,
+  Square,
+  X,
+  Terminal,
+  Layers,
+  Sparkles,
 } from "lucide-react";
 
 export async function loader({ request }: { request: Request }) {
@@ -122,25 +126,248 @@ export default function RouteEditorPage() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapInstanceRef = useRef<MlMap | null>(null);
-  const mapReadyRef = useRef<boolean>(false);
-  const shapeMarkersRef = useRef<Marker[]>([]);
-  const stopMarkersRef = useRef<Marker[]>([]);
-  const mapClickHandlerRef = useRef<((e: any) => void) | null>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const leafletRef = useRef<any>(null);
+  const layerGroupRef = useRef<any>(null);
+  const lastFittedKeyRef = useRef<string>("");
+
   const routeColor = "#dc2626";
   const stopColor = "#2563eb";
-  const MAPTILER_KEY =
-    (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_MAPTILER_KEY) || "";
 
   const [selectedDirection, setSelectedDirection] = useState<number>(1);
   const [routeSearchText, setRouteSearchText] = useState<string>("");
   const [valhallaUrl, setValhallaUrl] = useState<string>("https://valhala.bykemalh.me");
   const [isValhallaRouting, setIsValhallaRouting] = useState<boolean>(false);
 
+  // Bulk Auto Snap State
+  const [isBulkModalOpen, setIsBulkModalOpen] = useState<boolean>(false);
+  const [isBulkRunning, setIsBulkRunning] = useState<boolean>(false);
+  const [bulkLogs, setBulkLogs] = useState<Array<{ id: string; time: string; type: "info" | "success" | "warning" | "error"; text: string }>>([]);
+  const [bulkProgress, setBulkProgress] = useState<{ totalRoutes: number; currentRouteIdx: number; successDirections: number; failedDirections: number }>({
+    totalRoutes: 0,
+    currentRouteIdx: 0,
+    successDirections: 0,
+    failedDirections: 0,
+  });
+  const abortBulkRef = useRef<boolean>(false);
+  const logConsoleRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll logs to bottom
+  useEffect(() => {
+    if (logConsoleRef.current) {
+      logConsoleRef.current.scrollTop = logConsoleRef.current.scrollHeight;
+    }
+  }, [bulkLogs]);
+
+  const addBulkLog = (type: "info" | "success" | "warning" | "error", text: string) => {
+    const time = new Date().toLocaleTimeString("tr-TR");
+    const id = Math.random().toString(36).substring(2, 9);
+    setBulkLogs((prev) => [...prev, { id, time, type, text }]);
+  };
+
+  const handleStartBulkSnap = async () => {
+    if (routes.length === 0) {
+      alert("Seçili şehirde işlenecek hat bulunamadı!");
+      return;
+    }
+
+    setIsBulkRunning(true);
+    abortBulkRef.current = false;
+    setBulkLogs([]);
+    setBulkProgress({
+      totalRoutes: routes.length,
+      currentRouteIdx: 0,
+      successDirections: 0,
+      failedDirections: 0,
+    });
+
+    addBulkLog("info", `🚀 Toplu Auto Snap işlemi başlatılıyor... (Şehir: ${activeCityObj?.name || activeCityId}, Toplam ${routes.length} Hat)`);
+    addBulkLog("info", `🌐 Valhalla Server URL: ${valhallaUrl}`);
+
+    let totalSuccess = 0;
+    let totalFailed = 0;
+
+    for (let i = 0; i < routes.length; i++) {
+      if (abortBulkRef.current) {
+        addBulkLog("warning", "⏹️ Toplu snap işlemi kullanıcı tarafından durduruldu.");
+        break;
+      }
+
+      const routeItem = routes[i];
+      const routeName = `${routeItem.code ? `[${routeItem.code}] ` : ""}${routeItem.name}`;
+
+      setBulkProgress((prev) => ({
+        ...prev,
+        currentRouteIdx: i + 1,
+      }));
+
+      addBulkLog("info", `--------------------------------------------------`);
+      addBulkLog("info", `📌 Hat [${i + 1}/${routes.length}]: ${routeName}`);
+
+      try {
+        const detailsRes = await fetch(`/api/route-details?routeId=${encodeURIComponent(routeItem.route_id)}`);
+        const detailsData = await detailsRes.json();
+
+        if (!detailsRes.ok || !detailsData.success || !detailsData.details) {
+          addBulkLog("error", `❌ ${routeName}: Rota detayları çekilemedi (${detailsData.message || "Bilinmeyen sunucu hatası"})`);
+          totalFailed++;
+          continue;
+        }
+
+        const { route: routeObj, shapes, stops } = detailsData.details;
+        const isLoop = routeObj.route_pattern === "loop";
+        const targetDirections = isLoop ? [0] : [1, 2];
+
+        for (const dir of targetDirections) {
+          if (abortBulkRef.current) break;
+
+          const dirLabel = isLoop ? "Ring (Yön 0)" : (dir === 1 ? "Gidiş (Yön 1)" : "Dönüş (Yön 2)");
+          addBulkLog("info", `  🔄 ${routeName} - ${dirLabel}: Snap isteği gönderiliyor...`);
+
+          let shape = shapes.find((s: any) => Number(s.direction) === dir);
+          let rawCoords: Array<{ lat: number; lon: number }> = [];
+
+          if (shape && shape.coordinates && Array.isArray(shape.coordinates) && shape.coordinates.length >= 2) {
+            rawCoords = shape.coordinates.map((c: any) => ({ lat: Number(c.lat), lon: Number(c.lon) }));
+          } else {
+            const dirStops = stops.filter((s: any) => Number(s.direction) === dir);
+            if (dirStops.length >= 2) {
+              rawCoords = dirStops.map((s: any) => ({ lat: Number(s.lat), lon: Number(s.lon) }));
+            }
+          }
+
+          if (rawCoords.length < 2) {
+            addBulkLog("warning", `  ⚠️ ${routeName} - ${dirLabel}: Atlandı (En az 2 durak/nokta gerekli).`);
+            continue;
+          }
+
+          const proxyPayload = {
+            targetUrl: valhallaUrl.trim(),
+            shape: rawCoords,
+            costing: "bus",
+            costing_options: {
+              bus: {
+                use_highways: 0.1,
+                use_tolls: 0.5,
+                use_ferry: 0,
+              },
+            },
+            shape_match: "map_snap",
+            shape_format: "polyline6",
+            filters: { action: "include" },
+            directed: false,
+          };
+
+          const vRes = await fetch("/api/valhalla", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(proxyPayload),
+          });
+
+          const vData = await vRes.json();
+
+          if (!vRes.ok || vData.error) {
+            addBulkLog("error", `  ❌ ${routeName} - ${dirLabel}: Valhalla hatası (${vData.message || `HTTP ${vRes.status}`})`);
+            totalFailed++;
+            continue;
+          }
+
+          let snappedPoints: Array<{ lat: number; lon: number }> = [];
+
+          if (vData.shape) {
+            snappedPoints = decodeValhallaPolyline(vData.shape, 6);
+          } else if (vData.trip && vData.trip.legs) {
+            vData.trip.legs.forEach((leg: any) => {
+              if (leg.shape) {
+                snappedPoints.push(...decodeValhallaPolyline(leg.shape, 6));
+              }
+            });
+          }
+
+          if (snappedPoints.length === 0) {
+            addBulkLog("warning", `  ⚠️ ${routeName} - ${dirLabel}: Valhalla nokta üretemedi.`);
+            totalFailed++;
+            continue;
+          }
+
+          const dirStops = stops
+            .filter((s: any) => Number(s.direction) === dir)
+            .map((s: any, idx: number) => ({
+              stop_id: s.stop_id,
+              city_id: s.city_id || activeCityId,
+              name: s.stop_name,
+              lat: Number(s.lat),
+              lon: Number(s.lon),
+              sequence: idx + 1,
+            }));
+
+          const saveRes = await fetch("/api/save-route", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              routeId: routeItem.route_id,
+              direction: dir,
+              shapeCoordinates: snappedPoints,
+              stopsList: dirStops,
+            }),
+          });
+
+          const saveData = await saveRes.json();
+
+          if (!saveRes.ok || !saveData.success) {
+            addBulkLog("error", `  ❌ ${routeName} - ${dirLabel}: Veritabanına kaydedilemedi (${saveData.message || "DB Hatası"})`);
+            totalFailed++;
+          } else {
+            totalSuccess++;
+            addBulkLog("success", `  ✅ ${routeName} - ${dirLabel}: ${snappedPoints.length} nokta ile yollara eşitlendi ve kaydedildi.`);
+
+            if (routeItem.route_id === activeRouteId && dir === effectiveDirection) {
+              setShapeCoords(snappedPoints);
+            }
+          }
+        }
+      } catch (err: any) {
+        addBulkLog("error", `❌ ${routeName}: Hata oluştu (${err.message})`);
+        totalFailed++;
+      }
+
+      setBulkProgress((prev) => ({
+        ...prev,
+        successDirections: totalSuccess,
+        failedDirections: totalFailed,
+      }));
+    }
+
+    setIsBulkRunning(false);
+    addBulkLog("info", `--------------------------------------------------`);
+    addBulkLog("info", `🎉 Toplu Snap İşlemi Bitti! Toplam ${totalSuccess} yön başarılı, ${totalFailed} yön hatalı/atlandı.`);
+  };
+
+  const handleStopBulkSnap = () => {
+    abortBulkRef.current = true;
+    addBulkLog("warning", "⏳ Durdurma isteği iletildi, mevcut hat tamamlanınca duracak...");
+  };
+
   // Editing State
   const [editMode, setEditMode] = useState<"view" | "add_shape" | "add_stop">("view");
   const [shapeCoords, setShapeCoords] = useState<Array<{ lat: number; lon: number }>>([]);
   const [stopsList, setStopsList] = useState<Array<{ stop_id: string; city_id: string; name: string; lat: number; lon: number; sequence: number }>>([]);
+
+  const editModeRef = useRef<"view" | "add_shape" | "add_stop">("view");
+  const stopsListRef = useRef<any[]>([]);
+  const activeCityIdRef = useRef<string>("");
+
+  useEffect(() => {
+    editModeRef.current = editMode;
+  }, [editMode]);
+
+  useEffect(() => {
+    stopsListRef.current = stopsList;
+  }, [stopsList]);
+
+  useEffect(() => {
+    activeCityIdRef.current = activeCityId;
+  }, [activeCityId]);
 
   const activeRoute = routeDetails?.route || null;
   const isLoopRoute = activeRoute?.route_pattern === "loop";
@@ -187,153 +414,73 @@ export default function RouteEditorPage() {
     setSearchParams({ city: activeCityId, route: routeId });
   };
 
-  // MapLibre Map Initialization
-  useEffect(() => {
-    if (!mapContainerRef.current) return;
+  // Remove a shape coordinate point
+  const handleRemoveShapePoint = (index: number) => {
+    setShapeCoords((prev) => prev.filter((_, i) => i !== index));
+  };
 
-    const centerLat = activeCityObj ? Number(activeCityObj.lat) : 40.19;
-    const centerLon = activeCityObj ? Number(activeCityObj.lon) : 29.06;
-    const defaultZoom = activeCityObj?.default_zoom || 12;
+  // Remove a stop
+  const handleRemoveStop = (stopId: string) => {
+    setStopsList((prev) => prev.filter((s) => s.stop_id !== stopId));
+  };
 
-    if (mapInstanceRef.current) {
-      mapInstanceRef.current.remove();
-      mapInstanceRef.current = null;
-      mapReadyRef.current = false;
-    }
-
-    const style: StyleSpecification = {
-      version: 8,
-      glyphs: `https://api.maptiler.com/fonts/{fontstack}/{range}.pbf?key=${MAPTILER_KEY}`,
-      sources: {
-        maptiler: {
-          type: "vector",
-          url: `https://api.maptiler.com/tiles/v3/tiles.json?key=${MAPTILER_KEY}`,
-        },
-      },
-      layers: [
-        { id: "background", type: "background", paint: { "background-color": "#f8f4ef" } },
-        { id: "water", type: "fill", source: "maptiler", "source-layer": "water", paint: { "fill-color": "#a8c8e8" } },
-        { id: "landcover-park", type: "fill", source: "maptiler", "source-layer": "landcover", filter: ["==", "class", "park"], paint: { "fill-color": "#d8e8d0", "fill-opacity": 0.7 } },
-        { id: "landcover-wood", type: "fill", source: "maptiler", "source-layer": "landcover", filter: ["==", "class", "wood"], paint: { "fill-color": "#cde0c4", "fill-opacity": 0.6 } },
-        { id: "landuse-residential", type: "fill", source: "maptiler", "source-layer": "landuse", filter: ["==", "class", "residential"], paint: { "fill-color": "#ececec" } },
-        { id: "building", type: "fill", source: "maptiler", "source-layer": "building", paint: { "fill-color": "#d9d5cc", "fill-outline-color": "#bdb8ad" } },
-        { id: "road-minor-casing", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["in", "class", "minor", "service", "tertiary"], paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1, 16, 4] } },
-        { id: "road-minor", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["in", "class", "minor", "service", "tertiary"], paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.5, 16, 3] } },
-        { id: "road-secondary-casing", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["in", "class", "secondary", "trunk"], paint: { "line-color": "#ffd591", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 16, 8] } },
-        { id: "road-secondary", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["in", "class", "secondary", "trunk"], paint: { "line-color": "#ffd591", "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.5, 16, 6] } },
-        { id: "road-primary-casing", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["==", "class", "primary"], paint: { "line-color": "#f9a06b", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 2, 16, 10] } },
-        { id: "road-primary", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["==", "class", "primary"], paint: { "line-color": "#f9a06b", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.5, 16, 7] } },
-        { id: "road-motorway-casing", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["==", "class", "motorway"], paint: { "line-color": "#e89263", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 2, 16, 12] } },
-        { id: "road-motorway", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["==", "class", "motorway"], paint: { "line-color": "#e89263", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 0.5, 16, 9] } },
-        { id: "road-rail", type: "line", source: "maptiler", "source-layer": "transportation", filter: ["==", "class", "rail"], paint: { "line-color": "#a7b0b8", "line-dasharray": [2, 2] } },
-        { id: "place-city", type: "symbol", source: "maptiler", "source-layer": "place", filter: ["==", "class", "city"], layout: { "text-field": "{name:latin}", "text-size": ["interpolate", ["linear"], ["zoom"], 4, 11, 10, 16], "text-font": ["Noto Sans Regular"] }, paint: { "text-color": "#1a1a1a", "text-halo-color": "#ffffff", "text-halo-width": 1.5 } },
-        { id: "place-town", type: "symbol", source: "maptiler", "source-layer": "place", filter: ["==", "class", "town"], layout: { "text-field": "{name:latin}", "text-size": ["interpolate", ["linear"], ["zoom"], 6, 10, 12, 14], "text-font": ["Noto Sans Regular"] }, paint: { "text-color": "#333333", "text-halo-color": "#ffffff", "text-halo-width": 1.2 } },
-        { id: "place-village", type: "symbol", source: "maptiler", "source-layer": "place", filter: ["==", "class", "village"], layout: { "text-field": "{name:latin}", "text-size": ["interpolate", ["linear"], ["zoom"], 8, 9, 14, 12], "text-font": ["Noto Sans Regular"] }, paint: { "text-color": "#555555", "text-halo-color": "#ffffff", "text-halo-width": 1 } },
-        { id: "road-label", type: "symbol", source: "maptiler", "source-layer": "transportation_name", minzoom: 12, layout: { "text-field": "{name:latin}", "text-size": 11, "text-font": ["Noto Sans Regular"], "symbol-placement": "line" }, paint: { "text-color": "#3a3a3a", "text-halo-color": "#ffffff", "text-halo-width": 1.2 } },
-      ],
-    };
-
-    const map = new maplibregl.Map({
-      container: mapContainerRef.current!,
-      style,
-      center: [centerLon, centerLat],
-      zoom: defaultZoom,
-      attributionControl: { compact: true },
-    });
-
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-
-    map.on("load", () => {
-      // Add line source/layers (casing + main)
-      if (!map.getSource("route-line")) {
-        map.addSource("route-line", {
-          type: "geojson",
-          data: { type: "FeatureCollection", features: [] },
-        });
-        map.addLayer({
-          id: "route-casing",
-          type: "line",
-          source: "route-line",
-          layout: { "line-join": "round", "line-cap": "round" },
-          paint: { "line-color": "#ffffff", "line-width": 9, "line-opacity": 0.9 },
-        });
-        map.addLayer({
-          id: "route-main",
-          type: "line",
-          source: "route-line",
-          layout: { "line-join": "round", "line-cap": "round" },
-          paint: { "line-color": routeColor, "line-width": 5, "line-opacity": 1 },
-        });
-      }
-      mapReadyRef.current = true;
-      renderMapLayers();
-    });
-
-    mapInstanceRef.current = map;
-
-    setTimeout(() => {
-      if (map) map.resize();
-    }, 150);
-
-    return () => {
-      shapeMarkersRef.current.forEach((m) => m.remove());
-      shapeMarkersRef.current = [];
-      stopMarkersRef.current.forEach((m) => m.remove());
-      stopMarkersRef.current = [];
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
-        mapInstanceRef.current = null;
-        mapReadyRef.current = false;
-      }
-    };
-  }, [activeCityId, MAPTILER_KEY]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Re-render layers when shapeCoords, stopsList or editMode change
-  useEffect(() => {
-    if (mapReadyRef.current) renderMapLayers();
-  }, [shapeCoords, stopsList, editMode, activeRouteId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  function renderMapLayers() {
+  // Render shapes and stops on Leaflet map
+  const renderLeafletLayers = useCallback(() => {
     const map = mapInstanceRef.current;
-    if (!map || !mapReadyRef.current) return;
+    const L = leafletRef.current;
+    if (!map || !L) return;
 
-    // 1. Update route line source
-    const lineSrc = map.getSource("route-line") as maplibregl.GeoJSONSource | undefined;
-    if (lineSrc) {
-      if (shapeCoords.length >= 2) {
-        lineSrc.setData({
-          type: "Feature",
-          properties: {},
-          geometry: {
-            type: "LineString",
-            coordinates: shapeCoords.map((c) => [c.lon, c.lat]),
-          },
-        });
-      } else {
-        lineSrc.setData({ type: "FeatureCollection", features: [] });
-      }
+    if (layerGroupRef.current) {
+      layerGroupRef.current.clearLayers();
+    } else {
+      layerGroupRef.current = L.layerGroup().addTo(map);
     }
 
-    // 2. Clear existing markers
-    shapeMarkersRef.current.forEach((m) => m.remove());
-    shapeMarkersRef.current = [];
-    stopMarkersRef.current.forEach((m) => m.remove());
-    stopMarkersRef.current = [];
+    const layerGroup = layerGroupRef.current;
+    let hasBounds = false;
+    const boundsGroup = L.featureGroup();
 
-    // 3. Shape waypoint markers (draggable, red)
+    // 1. Draw Route Polyline Shape
+    if (shapeCoords.length >= 2) {
+      const latLons = shapeCoords.map((c) => [c.lat, c.lon]);
+
+      // Outer white casing
+      L.polyline(latLons, {
+        color: "#ffffff",
+        weight: 9,
+        opacity: 0.9,
+        lineCap: "round",
+        lineJoin: "round",
+      }).addTo(layerGroup);
+
+      // Main RED line
+      const line = L.polyline(latLons, {
+        color: routeColor,
+        weight: 5,
+        opacity: 1,
+        lineCap: "round",
+        lineJoin: "round",
+      }).addTo(layerGroup);
+
+      line.addTo(boundsGroup);
+      hasBounds = true;
+    }
+
+    // 2. Shape Waypoint Markers (draggable, red)
     shapeCoords.forEach((c, idx) => {
-      const el = document.createElement("div");
-      el.style.cssText = `background-color: ${routeColor}; border: 2px solid #ffffff; width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.3); cursor: grab;`;
-      el.title = `Rota Noktası #${idx + 1}`;
+      const shapeIcon = L.divIcon({
+        className: "custom-shape-marker",
+        html: `<div style="background-color: ${routeColor}; border: 2px solid #ffffff; width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.3); cursor: grab;"></div>`,
+        iconSize: [14, 14],
+        iconAnchor: [7, 7],
+      });
 
-      const marker = new maplibregl.Marker({ element: el, draggable: true })
-        .setLngLat([c.lon, c.lat])
-        .addTo(map);
+      const marker = L.marker([c.lat, c.lon], { icon: shapeIcon, draggable: true }).addTo(layerGroup);
 
-      const popupEl = document.createElement("div");
-      popupEl.className = "p-1.5 space-y-2 text-xs font-sans";
-      popupEl.style.minWidth = "150px";
-      popupEl.innerHTML = `
+      const popupContent = document.createElement("div");
+      popupContent.className = "p-1.5 space-y-2 text-xs font-sans";
+      popupContent.style.minWidth = "150px";
+      popupContent.innerHTML = `
         <div style="font-weight: bold; color: #0f172a; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px;">
           📍 Rota Noktası #${idx + 1}
         </div>
@@ -344,38 +491,46 @@ export default function RouteEditorPage() {
           🗑️ Noktayı Sil
         </button>
       `;
-      const popup = new maplibregl.Popup({ offset: 10, closeButton: true }).setDOMContent(popupEl);
-      marker.setPopup(popup);
-      popup.on("open", () => {
+
+      marker.bindPopup(popupContent);
+      marker.on("popupopen", () => {
         const btn = document.getElementById(`del-shape-${idx}`);
-        if (btn) btn.onclick = () => {
-          handleRemoveShapePoint(idx);
-          popup.remove();
-        };
+        if (btn) {
+          btn.onclick = () => {
+            handleRemoveShapePoint(idx);
+            map.closePopup();
+          };
+        }
       });
-      marker.on("dragend", () => {
-        const ll = marker.getLngLat();
-        const newLat = Number(ll.lat.toFixed(6));
-        const newLon = Number(ll.lng.toFixed(6));
-        setShapeCoords((prev) => prev.map((item, i) => (i === idx ? { lat: newLat, lon: newLon } : item)));
+
+      marker.on("dragend", (event: any) => {
+        const newLatLng = event.target.getLatLng();
+        const newLat = Number(newLatLng.lat.toFixed(6));
+        const newLon = Number(newLatLng.lng.toFixed(6));
+        setShapeCoords((prev) =>
+          prev.map((item, i) => (i === idx ? { lat: newLat, lon: newLon } : item))
+        );
       });
-      shapeMarkersRef.current.push(marker);
+
+      marker.addTo(boundsGroup);
+      hasBounds = true;
     });
 
-    // 4. Stop markers (draggable, blue with number)
+    // 3. Stop Markers (draggable, blue numbered)
     stopsList.forEach((stop, idx) => {
-      const el = document.createElement("div");
-      el.style.cssText = `background-color: ${stopColor}; border: 3px solid #ffffff; width: 24px; height: 24px; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); cursor: grab; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; color: #ffffff;`;
-      el.textContent = String(idx + 1);
+      const stopIcon = L.divIcon({
+        className: "custom-stop-marker",
+        html: `<div style="background-color: ${stopColor}; border: 3px solid #ffffff; width: 26px; height: 26px; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); cursor: grab; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; color: #ffffff;">${idx + 1}</div>`,
+        iconSize: [26, 26],
+        iconAnchor: [13, 13],
+      });
 
-      const marker = new maplibregl.Marker({ element: el, draggable: true })
-        .setLngLat([stop.lon, stop.lat])
-        .addTo(map);
+      const marker = L.marker([stop.lat, stop.lon], { icon: stopIcon, draggable: true }).addTo(layerGroup);
 
-      const popupEl = document.createElement("div");
-      popupEl.className = "p-1.5 space-y-2 text-xs font-sans";
-      popupEl.style.minWidth = "180px";
-      popupEl.innerHTML = `
+      const popupContent = document.createElement("div");
+      popupContent.className = "p-1.5 space-y-2 text-xs font-sans";
+      popupContent.style.minWidth = "180px";
+      popupContent.innerHTML = `
         <div style="font-weight: bold; color: #0f172a; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px;">
           🚏 Durak #${idx + 1}
         </div>
@@ -394,88 +549,153 @@ export default function RouteEditorPage() {
           </button>
         </div>
       `;
-      const popup = new maplibregl.Popup({ offset: 14, closeButton: true }).setDOMContent(popupEl);
-      marker.setPopup(popup);
-      popup.on("open", () => {
+
+      marker.bindPopup(popupContent);
+      marker.on("popupopen", () => {
         const renameBtn = document.getElementById(`rename-stop-${idx}`);
-        if (renameBtn) renameBtn.onclick = () => {
-          const newName = prompt("Yeni Durak Adını Girin:", stop.name);
-          if (newName && newName.trim()) {
-            setStopsList((prev) =>
-              prev.map((s) => (s.stop_id === stop.stop_id ? { ...s, name: newName.trim() } : s))
-            );
-          }
-          popup.remove();
-        };
+        if (renameBtn) {
+          renameBtn.onclick = () => {
+            const newName = prompt("Yeni Durak Adını Girin:", stop.name);
+            if (newName && newName.trim()) {
+              setStopsList((prev) =>
+                prev.map((s) => (s.stop_id === stop.stop_id ? { ...s, name: newName.trim() } : s))
+              );
+            }
+            map.closePopup();
+          };
+        }
         const delBtn = document.getElementById(`del-stop-${idx}`);
-        if (delBtn) delBtn.onclick = () => {
-          handleRemoveStop(stop.stop_id);
-          popup.remove();
-        };
+        if (delBtn) {
+          delBtn.onclick = () => {
+            handleRemoveStop(stop.stop_id);
+            map.closePopup();
+          };
+        }
       });
-      marker.on("dragend", () => {
-        const ll = marker.getLngLat();
-        const newLat = Number(ll.lat.toFixed(6));
-        const newLon = Number(ll.lng.toFixed(6));
+
+      marker.on("dragend", (event: any) => {
+        const newLatLng = event.target.getLatLng();
+        const newLat = Number(newLatLng.lat.toFixed(6));
+        const newLon = Number(newLatLng.lng.toFixed(6));
         setStopsList((prev) =>
           prev.map((s) => (s.stop_id === stop.stop_id ? { ...s, lat: newLat, lon: newLon } : s))
         );
       });
-      stopMarkersRef.current.push(marker);
+
+      marker.addTo(boundsGroup);
+      hasBounds = true;
     });
 
-    // 5. Fit bounds if we have any data
-    const allPoints: [number, number][] = [
-      ...shapeCoords.map((c) => [c.lon, c.lat] as [number, number]),
-      ...stopsList.map((s) => [s.lon, s.lat] as [number, number]),
-    ];
-    if (allPoints.length >= 1) {
-      const bounds = new maplibregl.LngLatBounds(allPoints[0], allPoints[0]);
-      for (const p of allPoints.slice(1)) bounds.extend(p);
-      try {
-        map.fitBounds(bounds, { padding: 50, duration: 600, maxZoom: 17 });
-      } catch {
-        // ignore invalid bounds
+    // 4. Fit bounds ONLY when route or direction key changes!
+    const currentKey = `${activeCityId}_${activeRouteId}_${effectiveDirection}`;
+    if (lastFittedKeyRef.current !== currentKey && hasBounds) {
+      const bounds = boundsGroup.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [50, 50] });
+        lastFittedKeyRef.current = currentKey;
       }
     }
+  }, [shapeCoords, stopsList, activeCityId, activeRouteId, effectiveDirection]);
 
-    // 6. Click listener for adding shape points or stops
-    if (mapClickHandlerRef.current) {
-      map.off("click", mapClickHandlerRef.current);
-      mapClickHandlerRef.current = null;
-    }
-    const clickHandler = (e: any) => {
-      const lat = Number(e.lngLat.lat.toFixed(6));
-      const lon = Number(e.lngLat.lng.toFixed(6));
-      if (editMode === "add_shape") {
-        setShapeCoords((prev) => [...prev, { lat, lon }]);
-      } else if (editMode === "add_stop") {
-        const stopName = prompt("Yeni Durak Adını Girin:", `Durak #${stopsList.length + 1}`);
-        if (stopName) {
-          const newStop = {
-            stop_id: `${activeCityId}_ST_${Date.now()}`,
-            city_id: activeCityId,
-            name: stopName,
-            lat,
-            lon,
-            sequence: stopsList.length + 1,
-          };
-          setStopsList((prev) => [...prev, newStop]);
+  // Initialize Leaflet Map
+  useEffect(() => {
+    if (!mapContainerRef.current) return;
+
+    let map: any;
+
+    import("leaflet").then((module) => {
+      const L = module.default;
+      leafletRef.current = L;
+
+      delete (L.Icon.Default.prototype as any)._getIconUrl;
+      L.Icon.Default.mergeOptions({
+        iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png",
+        iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png",
+        shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png",
+      });
+
+      const centerLat = activeCityObj ? Number(activeCityObj.lat) : 40.19;
+      const centerLon = activeCityObj ? Number(activeCityObj.lon) : 29.06;
+      const defaultZoom = activeCityObj?.default_zoom || 12;
+
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+
+      map = L.map(mapContainerRef.current!, {
+        center: [centerLat, centerLon],
+        zoom: defaultZoom,
+        zoomControl: true,
+      });
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      }).addTo(map);
+
+      mapInstanceRef.current = map;
+      layerGroupRef.current = L.layerGroup().addTo(map);
+
+      map.on("click", (e: any) => {
+        const lat = Number(e.latlng.lat.toFixed(6));
+        const lon = Number(e.latlng.lng.toFixed(6));
+        const currentEditMode = editModeRef.current;
+        if (currentEditMode === "add_shape") {
+          setShapeCoords((prev) => [...prev, { lat, lon }]);
+        } else if (currentEditMode === "add_stop") {
+          const stopName = prompt("Yeni Durak Adını Girin:", `Durak #${stopsListRef.current.length + 1}`);
+          if (stopName && stopName.trim()) {
+            const newStop = {
+              stop_id: `${activeCityIdRef.current}_ST_${Date.now()}`,
+              city_id: activeCityIdRef.current,
+              name: stopName.trim(),
+              lat,
+              lon,
+              sequence: stopsListRef.current.length + 1,
+            };
+            setStopsList((prev) => [...prev, newStop]);
+          }
         }
+      });
+
+      setTimeout(() => {
+        if (map) map.invalidateSize();
+      }, 150);
+
+      renderLeafletLayers();
+    });
+
+    return () => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
       }
     };
-    mapClickHandlerRef.current = clickHandler;
-    map.on("click", clickHandler);
-  }
+  }, [activeCityId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Remove a shape coordinate point
-  const handleRemoveShapePoint = (index: number) => {
-    setShapeCoords((prev) => prev.filter((_, i) => i !== index));
-  };
+  // Re-render layers when shapeCoords, stopsList or editMode change
+  useEffect(() => {
+    renderLeafletLayers();
+  }, [renderLeafletLayers]);
 
-  // Remove a stop
-  const handleRemoveStop = (stopId: string) => {
-    setStopsList((prev) => prev.filter((s) => s.stop_id !== stopId));
+  // Recenter map manually
+  const handleRecenterMap = () => {
+    const map = mapInstanceRef.current;
+    const L = leafletRef.current;
+    if (!map || !L) return;
+
+    const allPoints: [number, number][] = [
+      ...shapeCoords.map((c) => [c.lat, c.lon] as [number, number]),
+      ...stopsList.map((s) => [s.lat, s.lon] as [number, number]),
+    ];
+
+    if (allPoints.length > 0) {
+      const bounds = L.latLngBounds(allPoints);
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [50, 50] });
+      }
+    }
   };
 
   // Valhalla Routing Auto-Snap Handler (via Server Proxy to bypass CORS)
@@ -583,12 +803,20 @@ export default function RouteEditorPage() {
           </p>
         </div>
 
-        {/* Top Action Save Button */}
+        {/* Top Action Buttons */}
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsBulkModalOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-xs transition cursor-pointer"
+          >
+            <Zap className="w-4 h-4 fill-white" />
+            <span>Toplu Auto Snap ({routes.length} Hat)</span>
+          </button>
+
           <button
             onClick={handleSaveToDb}
             disabled={isSaving || !activeRouteId}
-            className="inline-flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs transition disabled:opacity-50"
+            className="inline-flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs transition disabled:opacity-50 cursor-pointer"
           >
             {isSaving ? (
               <>
@@ -743,10 +971,18 @@ export default function RouteEditorPage() {
               <button
                 onClick={handleValhallaSnap}
                 disabled={isValhallaRouting || stopsList.length < 2}
-                className="w-full py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-2xs transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                className="w-full py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-2xs transition flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
               >
                 {isValhallaRouting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
-                <span>Valhalla ile Yollara Eşitle (Auto Snap)</span>
+                <span>Seçili Hat Yollara Eşitle (Snap)</span>
+              </button>
+
+              <button
+                onClick={() => setIsBulkModalOpen(true)}
+                className="w-full py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 border border-slate-300 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                <span>Tüm Şehir Hatlarını Toplu Eşitle (Bulk)</span>
               </button>
             </div>
           </div>
@@ -794,18 +1030,204 @@ export default function RouteEditorPage() {
           </div>
         </div>
 
-        {/* Right Map Canvas Area (MapLibre Vector Tiles via MapTiler) */}
+        {/* Right Map Canvas Area (Leaflet OpenStreetMap) */}
         <div className="flex-1 h-full min-h-[500px] relative bg-slate-100">
           <div ref={mapContainerRef} className="w-full h-full absolute inset-0 z-10" />
 
-          {/* Active Mode Banner */}
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-white/95 backdrop-blur-md px-4 py-2 rounded-full shadow-lg border border-slate-200 text-xs font-bold text-slate-900 flex items-center gap-2">
-            {editMode === "add_shape" && <span className="text-blue-600 animate-pulse">✏️ Haritaya Tıklayarak Rota Çizgisine Nokta Ekleyin</span>}
-            {editMode === "add_stop" && <span className="text-amber-600 animate-pulse">🚏 Haritaya Tıklayarak Yeni Durak Ekleyin</span>}
-            {editMode === "view" && <span className="text-slate-700">🖐️ Sürükleyin veya Noktalara Tıklayarak Düzenleyin / Silin</span>}
+          {/* Active Mode & Action Overlay Banner */}
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2">
+            <div className="bg-white/95 backdrop-blur-md px-4 py-2 rounded-full shadow-lg border border-slate-200 text-xs font-bold text-slate-900 flex items-center gap-2">
+              {editMode === "add_shape" && <span className="text-blue-600 animate-pulse">✏️ Haritaya Tıklayarak Rota Çizgisine Nokta Ekleyin</span>}
+              {editMode === "add_stop" && <span className="text-amber-600 animate-pulse">🚏 Haritaya Tıklayarak Yeni Durak Ekleyin</span>}
+              {editMode === "view" && <span className="text-slate-700">🖐️ Sürükleyin veya Noktalara Tıklayarak Düzenleyin / Silin</span>}
+            </div>
+            <button
+              onClick={handleRecenterMap}
+              title="Haritayı Rota ve Duraklara Odakla"
+              className="bg-white hover:bg-slate-50 text-slate-700 px-3 py-2 rounded-full shadow-lg border border-slate-200 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+            >
+              <Focus className="w-4 h-4 text-blue-600" />
+              <span>Ortala</span>
+            </button>
           </div>
         </div>
       </div>
+
+      {/* BULK AUTO SNAP MODAL */}
+      {isBulkModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl max-w-3xl w-full shadow-2xl flex flex-col max-h-[90vh] overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/50">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-500/20 text-amber-400 rounded-xl">
+                  <Zap className="w-5 h-5 fill-amber-400" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white flex items-center gap-2">
+                    Toplu Valhalla Rota Eşitleme Motoru (Bulk Auto Snap)
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    {activeCityObj ? `${activeCityObj.country_name} - ${activeCityObj.name}` : activeCityId} şehrine ait tüm hatların rotalarını Valhalla ile otonom olarak yollara çeker ve kaydeder.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  if (isBulkRunning) handleStopBulkSnap();
+                  setIsBulkModalOpen(false);
+                }}
+                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-4 space-y-4 flex-1 overflow-y-auto">
+              {/* Config & Controls */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800 text-xs">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase">Seçili Şehir</label>
+                  <div className="font-bold text-white flex items-center gap-1.5 truncate">
+                    <Layers className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                    <span className="truncate">{activeCityObj ? activeCityObj.name : activeCityId} ({routes.length} Hat)</span>
+                  </div>
+                </div>
+
+                <div className="space-y-1 md:col-span-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase">Valhalla Routing Server URL</label>
+                  <input
+                    type="text"
+                    value={valhallaUrl}
+                    onChange={(e) => setValhallaUrl(e.target.value)}
+                    disabled={isBulkRunning}
+                    className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg font-mono text-xs text-slate-200 focus:outline-none focus:border-amber-500 disabled:opacity-50"
+                  />
+                </div>
+              </div>
+
+              {/* Progress Bar & Badges */}
+              <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold">
+                  <span className="text-slate-300 flex items-center gap-1.5">
+                    {isBulkRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" /> : <Terminal className="w-3.5 h-3.5 text-amber-400" />}
+                    <span>İşlem Durumu: {isBulkRunning ? "İşleniyor..." : (bulkProgress.currentRouteIdx > 0 ? "Tamamlandı" : "Hazır")}</span>
+                  </span>
+                  <span className="font-mono text-amber-400">
+                    {bulkProgress.totalRoutes > 0
+                      ? `${Math.round((bulkProgress.currentRouteIdx / bulkProgress.totalRoutes) * 100)}% (${bulkProgress.currentRouteIdx}/${bulkProgress.totalRoutes} Hat)`
+                      : "0%"}
+                  </span>
+                </div>
+
+                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                  <div
+                    className="bg-gradient-to-r from-amber-500 to-amber-400 h-full transition-all duration-300"
+                    style={{
+                      width: `${bulkProgress.totalRoutes > 0 ? (bulkProgress.currentRouteIdx / bulkProgress.totalRoutes) * 100 : 0}%`,
+                    }}
+                  />
+                </div>
+
+                {/* Counters */}
+                <div className="grid grid-cols-4 gap-2 pt-1 text-center text-xs">
+                  <div className="p-1.5 bg-slate-900 rounded-lg border border-slate-800">
+                    <span className="text-[10px] text-slate-400 block">Toplam Hat</span>
+                    <span className="font-mono font-bold text-slate-200">{bulkProgress.totalRoutes}</span>
+                  </div>
+                  <div className="p-1.5 bg-slate-900 rounded-lg border border-slate-800">
+                    <span className="text-[10px] text-slate-400 block">İşlenen</span>
+                    <span className="font-mono font-bold text-amber-400">{bulkProgress.currentRouteIdx}</span>
+                  </div>
+                  <div className="p-1.5 bg-slate-900 rounded-lg border border-slate-800">
+                    <span className="text-[10px] text-slate-400 block">Başarılı Yön</span>
+                    <span className="font-mono font-bold text-emerald-400">{bulkProgress.successDirections}</span>
+                  </div>
+                  <div className="p-1.5 bg-slate-900 rounded-lg border border-slate-800">
+                    <span className="text-[10px] text-slate-400 block">Hata / Atlanan</span>
+                    <span className="font-mono font-bold text-rose-400">{bulkProgress.failedDirections}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Terminal Log Console */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-400 px-1">
+                  <span className="flex items-center gap-1.5">
+                    <Terminal className="w-3.5 h-3.5 text-slate-400" />
+                    <span>İşlem Canlı Günlüğü (Realtime Execution Logs)</span>
+                  </span>
+                  <button
+                    onClick={() => setBulkLogs([])}
+                    disabled={isBulkRunning}
+                    className="text-[10px] text-slate-500 hover:text-slate-300 underline disabled:opacity-30 cursor-pointer"
+                  >
+                    Temizle
+                  </button>
+                </div>
+
+                <div
+                  ref={logConsoleRef}
+                  className="h-64 bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-xs overflow-y-auto space-y-1 selection:bg-amber-500/30"
+                >
+                  {bulkLogs.length === 0 ? (
+                    <p className="text-slate-600 italic text-center py-12">
+                      Toplu snap işlemini başlatmak için aşağıdaki düğmeye tıklayın...
+                    </p>
+                  ) : (
+                    bulkLogs.map((log) => (
+                      <div key={log.id} className="flex items-start gap-2 leading-relaxed">
+                        <span className="text-slate-600 text-[10px] flex-shrink-0 font-mono">[{log.time}]</span>
+                        <span
+                          className={
+                            log.type === "success"
+                              ? "text-emerald-400"
+                              : log.type === "error"
+                              ? "text-rose-400"
+                              : log.type === "warning"
+                              ? "text-amber-400 font-semibold"
+                              : "text-slate-300"
+                          }
+                        >
+                          {log.text}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer Controls */}
+            <div className="p-4 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between gap-3">
+              <span className="text-xs text-slate-500">
+                Arka planda tüm hatların şekilleri Valhalla ile yollara hizalanır.
+              </span>
+
+              <div className="flex items-center gap-2">
+                {isBulkRunning ? (
+                  <button
+                    onClick={handleStopBulkSnap}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-white" />
+                    <span>Durdur</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStartBulkSnap}
+                    className="px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-lg transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-white" />
+                    <span>Toplu Eşitlemeyi Başlat</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
