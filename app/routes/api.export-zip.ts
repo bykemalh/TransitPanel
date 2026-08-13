@@ -10,9 +10,9 @@ export async function loader() {
     zip.file(filename, JSON.stringify(content, null, 2));
   }
 
-  const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+  const zipBuffer = await zip.generateAsync({ type: "uint8array" });
 
-  return new Response(zipBuffer, {
+  return new Response(zipBuffer as unknown as BodyInit, {
     status: 200,
     headers: {
       "Content-Type": "application/zip",

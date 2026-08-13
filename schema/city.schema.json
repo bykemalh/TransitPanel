@@ -15,7 +15,22 @@
       "type": "string"
     },
     "name": {
-      "type": "string"
+      "type": "object",
+      "properties": {
+        "tr": {
+          "type": "string"
+        },
+        "en": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tr"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Çoklu dil isim nesnesi. 'tr' zorunludur, diğer dil kodları (en, ar, de vb.) opsiyoneldir."
     },
     "timezone": {
       "type": "string",
@@ -51,16 +66,24 @@
       "type": "object",
       "properties": {
         "north": {
-          "type": "number"
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
         },
         "south": {
-          "type": "number"
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
         },
         "east": {
-          "type": "number"
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
         },
         "west": {
-          "type": "number"
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
         }
       },
       "required": [

@@ -6,16 +6,17 @@
 --
 -- Notlar:
 --  - Tüm PK'ler JSON'daki *_id alanlarını TEXT olarak korur (kaynak
---    sistemle senkron kalmak için). İstersen sonradan surrogate BIGINT
---    id + UNIQUE(text_id) yapısına geçilebilir.
+--    sistemle senkron kalmak için).
 --  - PostGIS: stop/route geometrileri GEOGRAPHY(POINT/LINESTRING,4326)
 --    olarak tutulur -> mesafe sorguları metre cinsinden doğru sonuç verir.
+--  - İsimler (name) JSON şemasına uygun olarak JSONB nesnesi olarak tutulur:
+--    {"tr": "...", "en": "..."} ve 'tr' alanı zorunludur.
 --  - Enum'lar JSON schema'daki enum listeleriyle birebir eşleşir.
 -- =====================================================================
 
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- isim aramaları için (name ILIKE / similarity)
-CREATE EXTENSION IF NOT EXISTS btree_gist; -- exclusion constraint'ler için (opsiyonel, aşağıda kullanılıyor)
+CREATE EXTENSION IF NOT EXISTS btree_gist; -- exclusion constraint'ler için (opsiyonel)
 
 -- ---------------------------------------------------------------------
 -- ENUM TİPLERİ
@@ -64,8 +65,8 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- 1) COUNTRY
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS country (
-  country_id   TEXT PRIMARY KEY,                 -- ISO 3166-1 alpha-2 önerilir
-  name         TEXT NOT NULL,
+  country_id   TEXT PRIMARY KEY CHECK (country_id ~ '^[A-Z]{2}$'), -- ISO 3166-1 alpha-2
+  name         JSONB NOT NULL CHECK (name ? 'tr'),
   updated_at   TIMESTAMPTZ NOT NULL,
   source       TEXT
 );
@@ -79,7 +80,7 @@ CREATE TABLE IF NOT EXISTS city (
                   CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
   country_id    TEXT NOT NULL REFERENCES country(country_id)
                   ON UPDATE CASCADE ON DELETE RESTRICT,
-  name          TEXT NOT NULL,
+  name          JSONB NOT NULL CHECK (name ? 'tr'),
   timezone      TEXT NOT NULL
                   CHECK (timezone ~ '^[A-Za-z_]+(/[A-Za-z0-9_+-]+)+$'),
   center_lat    DOUBLE PRECISION NOT NULL CHECK (center_lat BETWEEN -90 AND 90),
@@ -88,10 +89,10 @@ CREATE TABLE IF NOT EXISTS city (
                   ST_SetSRID(ST_MakePoint(center_lon, center_lat),4326)::geography
                 ) STORED,
   default_zoom  SMALLINT CHECK (default_zoom BETWEEN 1 AND 20),
-  bounds_north  DOUBLE PRECISION,
-  bounds_south  DOUBLE PRECISION,
-  bounds_east   DOUBLE PRECISION,
-  bounds_west   DOUBLE PRECISION,
+  bounds_north  DOUBLE PRECISION CHECK (bounds_north IS NULL OR (bounds_north BETWEEN -90 AND 90)),
+  bounds_south  DOUBLE PRECISION CHECK (bounds_south IS NULL OR (bounds_south BETWEEN -90 AND 90)),
+  bounds_east   DOUBLE PRECISION CHECK (bounds_east IS NULL OR (bounds_east BETWEEN -180 AND 180)),
+  bounds_west   DOUBLE PRECISION CHECK (bounds_west IS NULL OR (bounds_west BETWEEN -180 AND 180)),
   bounds_geom   GEOGRAPHY(POLYGON,4326) GENERATED ALWAYS AS (
                   CASE WHEN bounds_north IS NOT NULL AND bounds_south IS NOT NULL
                             AND bounds_east IS NOT NULL AND bounds_west IS NOT NULL
@@ -112,7 +113,7 @@ CREATE TABLE IF NOT EXISTS agency (
   agency_id   TEXT PRIMARY KEY,
   city_id     TEXT NOT NULL REFERENCES city(city_id)
                 ON UPDATE CASCADE ON DELETE RESTRICT,
-  name        TEXT NOT NULL,
+  name        JSONB NOT NULL CHECK (name ? 'tr'),
   phone       TEXT,
   website     TEXT CHECK (website IS NULL OR website ~ '^https?://'),
   updated_at  TIMESTAMPTZ NOT NULL,
@@ -126,8 +127,7 @@ CREATE TABLE IF NOT EXISTS fare (
   fare_id            TEXT PRIMARY KEY,
   agency_id          TEXT NOT NULL REFERENCES agency(agency_id)
                         ON UPDATE CASCADE ON DELETE CASCADE,
-  name               TEXT NOT NULL,
-  name_en            TEXT NOT NULL,
+  name               JSONB NOT NULL CHECK (name ? 'tr'),
   fare_type          fare_type_enum NOT NULL DEFAULT 'flat',
   price              NUMERIC(10,2) NOT NULL CHECK (price >= 0),
   currency           CHAR(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS holiday (
   date        DATE NOT NULL,
   country_id  TEXT NOT NULL REFERENCES country(country_id)
                 ON UPDATE CASCADE ON DELETE CASCADE,
-  name        TEXT NOT NULL,
+  name        JSONB NOT NULL CHECK (name ? 'tr'),
   applies_as  weekday_enum NOT NULL DEFAULT 'sunday',
   updated_at  TIMESTAMPTZ NOT NULL,
   source      TEXT,
@@ -159,9 +159,10 @@ CREATE INDEX IF NOT EXISTS idx_holiday_date ON holiday(date);
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS route (
   route_id      TEXT PRIMARY KEY,
+  slug          TEXT NOT NULL CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
   agency_id     TEXT NOT NULL REFERENCES agency(agency_id)
                   ON UPDATE CASCADE ON DELETE RESTRICT,
-  name          TEXT NOT NULL,
+  name          JSONB NOT NULL CHECK (name ? 'tr'),
   code          TEXT,
   color         TEXT CHECK (color IS NULL OR color ~ '^#[0-9A-Fa-f]{6}$'),
   vehicle_type  vehicle_type_enum NOT NULL,
@@ -174,9 +175,10 @@ CREATE TABLE IF NOT EXISTS route (
 );
 CREATE INDEX IF NOT EXISTS idx_route_agency ON route(agency_id);
 CREATE INDEX IF NOT EXISTS idx_route_fare ON route(fare_id);
+CREATE INDEX IF NOT EXISTS idx_route_slug ON route(slug);
 
 -- Route'un fare'i, route'un kendi agency'sinden farklı bir agency'e
--- ait OLMAMALI. JSON şemada zorlanmıyor -> burada trigger ile garanti ediyoruz.
+-- ait OLMAMALI. Trigger ile garanti ediyoruz.
 CREATE OR REPLACE FUNCTION trg_route_fare_agency_match() RETURNS TRIGGER AS $$
 BEGIN
   IF NEW.fare_id IS NOT NULL THEN
@@ -202,7 +204,7 @@ CREATE TABLE IF NOT EXISTS stop (
   stop_id                  TEXT PRIMARY KEY,
   city_id                  TEXT NOT NULL REFERENCES city(city_id)
                              ON UPDATE CASCADE ON DELETE RESTRICT,
-  name                     TEXT NOT NULL,
+  name                     JSONB NOT NULL CHECK (name ? 'tr'),
   lat                      DOUBLE PRECISION NOT NULL CHECK (lat BETWEEN -90 AND 90),
   lon                      DOUBLE PRECISION NOT NULL CHECK (lon BETWEEN -180 AND 180),
   geom                     GEOGRAPHY(POINT,4326) GENERATED ALWAYS AS (
@@ -369,7 +371,7 @@ CREATE TABLE IF NOT EXISTS stop_time (
   stop_id         TEXT NOT NULL REFERENCES stop(stop_id)
                     ON UPDATE CASCADE ON DELETE RESTRICT,
   sequence        INTEGER NOT NULL CHECK (sequence >= 1),
-  departure_time  TEXT CHECK (departure_time IS NULL OR departure_time ~ '^[0-9]{1,2}:[0-5][0-9]:[0-5][0-9]$'),
+  departure_time  TEXT CHECK (departure_time IS NULL OR departure_time ~ '^([0-1][0-9]|2[0-7]):[0-5][0-9]:[0-5][0-9]$'),
   departure_secs  INTEGER GENERATED ALWAYS AS (
                      CASE WHEN departure_time IS NOT NULL THEN
                        split_part(departure_time,':',1)::int * 3600
@@ -385,73 +387,26 @@ CREATE TABLE IF NOT EXISTS stop_time (
 CREATE INDEX IF NOT EXISTS idx_stop_time_stop ON stop_time(stop_id);
 CREATE INDEX IF NOT EXISTS idx_stop_time_stop_dept ON stop_time(stop_id, departure_secs);
 
+-- ---------------------------------------------------------------------
+-- INDEKSLER (UZAMSAL & METİN ARAMA)
+-- ---------------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_city_center_geom   ON city  USING GIST (center_geom);
 CREATE INDEX IF NOT EXISTS idx_city_bounds_geom   ON city  USING GIST (bounds_geom);
 CREATE INDEX IF NOT EXISTS idx_stop_geom          ON stop  USING GIST (geom);
 CREATE INDEX IF NOT EXISTS idx_stop_platform_geom ON stop_platform USING GIST (geom);
 CREATE INDEX IF NOT EXISTS idx_shape_geom         ON shape USING GIST (geom);
 
-CREATE INDEX IF NOT EXISTS idx_stop_name_trgm  ON stop  USING GIN (name gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_route_name_trgm ON route USING GIN (name gin_trgm_ops);
+-- Trigram metin arama indeksleri (Türkçe isim alanı üzerinden)
+CREATE INDEX IF NOT EXISTS idx_country_name_trgm ON country USING GIN ((name->>'tr') gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_city_name_trgm    ON city    USING GIN ((name->>'tr') gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_agency_name_trgm  ON agency  USING GIN ((name->>'tr') gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_fare_name_trgm    ON fare    USING GIN ((name->>'tr') gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_holiday_name_trgm ON holiday USING GIN ((name->>'tr') gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_route_name_trgm   ON route   USING GIN ((name->>'tr') gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_stop_name_trgm    ON stop    USING GIN ((name->>'tr') gin_trgm_ops);
 
-CREATE INDEX IF NOT EXISTS idx_stop_city   ON stop(city_id);
-CREATE INDEX IF NOT EXISTS idx_agency_city ON agency(city_id);
+-- Slug & FK indeksleri
+CREATE INDEX IF NOT EXISTS idx_city_slug    ON city(slug);
 CREATE INDEX IF NOT EXISTS idx_city_country ON city(country_id);
-
--- * "Bu hattın bugünkü seferleri" gibi sorgular için kompozit index
---   (trip tablosunda zaten idx_trip_route_dir_service var, stop_time'da
---   trip_id + sequence PK olarak zaten kapsanıyor)
--- * En sık çalışacak API sorgusu -> "X durağının Y saatinden sonraki
---   kalkışları": idx_stop_time_stop_dept (stop_id, departure_secs)
---   kompozit index'i ile karşılanır (index-only scan).
-
--- =====================================================================
--- ETL / BULK LOAD PERFORMANS NOTU
--- =====================================================================
--- trip ve stop_time gibi büyük hacimli tablolarda (Bursa ölçeğinde
--- 120.000+ satır) satır-bazlı (ROW-level) PL/pgSQL trigger'lardan
--- bilerek kaçınıldı:
---   - trip: route_pattern <-> direction kontrolü trigger olarak KONULMADI.
---     Aynı kural zaten route_stop ve shape'te satır-bazlı trigger ile
---     zorlanıyor; trip seviyesinde tekrar route'a SELECT atmak sadece
---     ETL süresini uzatır, veri bütünlüğüne katkısı yoktur.
---   - stop_time: "ilk durak departure_time zorunlu" kuralı trigger yerine
---     CHECK constraint olarak yazıldı (check_first_departure). CHECK
---     constraint satırın kendi kolonlarına bakar, fonksiyon çağrısı ve
---     ekstra tablo erişimi olmadığı için COPY/bulk INSERT'i pratikte
---     yavaşlatmaz.
---
--- Toplu yükleme (COPY) sırasında hâlâ kalan trigger'lı tablolar
--- (route, route_stop, shape) görece küçük hacimli olduğu için (yüzlerce/
--- birkaç bin satır) etkisi ihmal edilebilir düzeydedir.
---
--- Ekstra hız için: büyük COPY işlemlerinden önce ilgili tablolardaki
--- index'leri DROP edip işlem bitince yeniden CREATE etmek (veya
--- CREATE INDEX CONCURRENTLY ile sonradan eklemek) de yaygın bir pratiktir.
---
--- ETL SONRASI DOĞRULAMA (trip için kaldırılan kontrolün yerine):
--- Tek seferlik, ucuz bir JOIN ile tutarsız satır var mı diye kontrol edilir:
---
--- SELECT t.trip_id, t.direction, r.route_pattern
--- FROM trip t JOIN route r ON r.route_id = t.route_id
--- WHERE (r.route_pattern = 'loop' AND t.direction <> 0)
---    OR (r.route_pattern = 'round_trip' AND t.direction NOT IN (1,2));
--- -- Sonuç boşsa veri tutarlı demektir.
-
--- =====================================================================
--- ÖRNEK KULLANIŞLI SORGULAR
--- =====================================================================
--- En yakın durakları bulma (500m içinde):
--- SELECT stop_id, name, ST_Distance(geom, ST_MakePoint(29.06,40.19)::geography) AS dist_m
--- FROM stop
--- WHERE ST_DWithin(geom, ST_MakePoint(29.06,40.19)::geography, 500)
--- ORDER BY dist_m;
---
--- Bir hattın güzergahını GeoJSON olarak çekme:
--- SELECT ST_AsGeoJSON(geom) FROM shape WHERE route_id = 'BUR-1' AND direction = 1;
---
--- X durağının 08:00'den sonraki kalkışları (idx_stop_time_stop_dept kullanır):
--- SELECT trip_id, departure_time FROM stop_time
--- WHERE stop_id = 'BUR_ST_001' AND departure_secs >= 28800
--- ORDER BY departure_secs;
--- =====================================================================
+CREATE INDEX IF NOT EXISTS idx_agency_city  ON agency(city_id);
+CREATE INDEX IF NOT EXISTS idx_stop_city    ON stop(city_id);

@@ -27,7 +27,7 @@ if (process.env.NODE_NODE_ENV !== "production") {
   globalThis.__dbPool = pool;
 }
 
-export async function query<T = any>(text: string, params?: any[]): Promise<pg.QueryResult<T>> {
+export async function query<T extends pg.QueryResultRow = any>(text: string, params?: any[]): Promise<pg.QueryResult<T>> {
   await ensureSchemaInitialized();
   return pool.query<T>(text, params);
 }

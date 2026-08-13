@@ -13,12 +13,22 @@
       "description": "Bu ücretin ait olduğu ajans."
     },
     "name": {
-      "type": "string",
-      "description": "Ücretin Türkçe adı. Örn. 'Tam Bilet', 'Öğrenci', '65+ Ücretsiz'."
-    },
-    "name_en": {
-      "type": "string",
-      "description": "Ücretin İngilizce adı. Örn. 'Full Ticket', 'Student', '65+ Free'."
+      "type": "object",
+      "properties": {
+        "tr": {
+          "type": "string"
+        },
+        "en": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tr"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Çoklu dil isim nesnesi. 'tr' zorunludur, diğer dil kodları (en, ar, de vb.) opsiyoneldir. Örn. {'tr': 'Tam Bilet', 'en': 'Full Ticket'}."
     },
     "fare_type": {
       "type": "string",
@@ -80,7 +90,6 @@
     "fare_id",
     "agency_id",
     "name",
-    "name_en",
     "fare_type",
     "price",
     "currency",

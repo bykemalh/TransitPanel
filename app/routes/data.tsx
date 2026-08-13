@@ -1,6 +1,7 @@
 import { useLoaderData, useSearchParams, Form, useSubmit, useNavigation, useActionData } from "react-router";
 import { useState } from "react";
 import { getEntityData, deleteEntityItem, executeImportPayload } from "../lib/db-operations.server";
+import { formatName } from "../lib/types";
 import type { EntityName } from "../lib/types";
 import {
   Search,
@@ -373,7 +374,7 @@ function getTableHeaders(entity: EntityName): string[] {
     case "agency": return ["Agency ID", "Şehir ID", "Ajans Adı", "Telefon", "Web"];
     case "fare": return ["Fare ID", "Ajans ID", "Adı", "Fiyat", "Para Birimi"];
     case "holiday": return ["Tarih", "Ülke ID", "Adı", "Sefer Günü Uygulaması"];
-    case "route": return ["Route ID", "Ajans ID", "Kod", "Adı", "Araç Türü", "Desen"];
+    case "route": return ["Route ID", "Slug", "Ajans ID", "Kod", "Adı", "Araç Türü", "Desen"];
     case "stop": return ["Stop ID", "Şehir ID", "Durak Adı", "Enlem/Boylam", "Erişilebilirlik"];
     case "route_stop": return ["Route ID", "Yön", "Sıra", "Stop ID", "İlk/Son Durak"];
     case "shape": return ["Shape ID", "Route ID", "Yön", "Koordinat Nokta Sayısı"];
@@ -385,19 +386,19 @@ function getTableHeaders(entity: EntityName): string[] {
 function getTableColumns(entity: EntityName, row: any): string[] {
   switch (entity) {
     case "country":
-      return [row.country_id, row.name, new Date(row.updated_at).toLocaleDateString("tr-TR")];
+      return [row.country_id, formatName(row.name), new Date(row.updated_at).toLocaleDateString("tr-TR")];
     case "city":
-      return [row.city_id, row.slug, row.country_id, row.name, row.timezone, `${row.lat}, ${row.lon}`];
+      return [row.city_id, row.slug, row.country_id, formatName(row.name), row.timezone, `${row.lat}, ${row.lon}`];
     case "agency":
-      return [row.agency_id, row.city_id, row.name, row.phone || "-", row.website || "-"];
+      return [row.agency_id, row.city_id, formatName(row.name), row.phone || "-", row.website || "-"];
     case "fare":
-      return [row.fare_id, row.agency_id, row.name, String(row.price), row.currency];
+      return [row.fare_id, row.agency_id, formatName(row.name), String(row.price), row.currency];
     case "holiday":
-      return [row.date ? new Date(row.date).toLocaleDateString("tr-TR") : "-", row.country_id, row.name, row.applies_as];
+      return [row.date ? new Date(row.date).toLocaleDateString("tr-TR") : "-", row.country_id, formatName(row.name), row.applies_as];
     case "route":
-      return [row.route_id, row.agency_id, row.code || "-", row.name, row.vehicle_type, row.route_pattern];
+      return [row.route_id, row.slug || "-", row.agency_id, row.code || "-", formatName(row.name), row.vehicle_type, row.route_pattern];
     case "stop":
-      return [row.stop_id, row.city_id, row.name, `${row.lat}, ${row.lon}`, row.wheelchair_accessible ? "Var ✅" : "Yok ❌"];
+      return [row.stop_id, row.city_id, formatName(row.name), `${row.lat}, ${row.lon}`, row.wheelchair_accessible ? "Var ✅" : "Yok ❌"];
     case "route_stop":
       return [row.route_id, String(row.direction), String(row.sequence), row.stop_id, row.is_first_stop ? "İlk" : row.is_last_stop ? "Son" : "Ara"];
     case "shape":
@@ -428,13 +429,13 @@ function getPrimaryKeyObject(entity: EntityName, item: any): Record<string, any>
 function getEmptyTemplate(entity: EntityName): any {
   const now = new Date().toISOString();
   switch (entity) {
-    case "country": return { country_id: "TR", name: "Türkiye", updated_at: now, source: "manual" };
-    case "city": return { city_id: "BUR", slug: "bursa", country_id: "TR", name: "Bursa", timezone: "Europe/Istanbul", center: { lat: 40.19, lon: 29.06 }, default_zoom: 12, updated_at: now, source: "manual" };
-    case "agency": return { agency_id: "BUR_AG", city_id: "BUR", name: "Burulaş", phone: "4441616", website: "https://www.burulas.com.tr", updated_at: now, source: "manual" };
-    case "fare": return { fare_id: "BUR-tam", agency_id: "BUR_AG", name: "Tam Bilet", name_en: "Full Ticket", fare_type: "flat", price: 20, currency: "TRY", updated_at: now, source: "manual" };
-    case "holiday": return { date: "2026-10-29", country_id: "TR", name: "Cumhuriyet Bayramı", applies_as: "sunday", updated_at: now, source: "manual" };
-    case "route": return { route_id: "BUR-1", agency_id: "BUR_AG", name: "1/A Heykel - Şehir Hastanesi", code: "1A", color: "#2563eb", vehicle_type: "bus", route_pattern: "round_trip", stop_mode: "fixed", updated_at: now, source: "manual" };
-    case "stop": return { stop_id: "BUR_ST_001", city_id: "BUR", name: "Heykel Duragi", lat: 40.183, lon: 29.061, location_type: "stop", wheelchair_accessible: true, updated_at: now, source: "manual" };
+    case "country": return { country_id: "TR", name: { tr: "Türkiye", en: "Turkey" }, updated_at: now, source: "manual" };
+    case "city": return { city_id: "BUR", slug: "bursa", country_id: "TR", name: { tr: "Bursa", en: "Bursa" }, timezone: "Europe/Istanbul", center: { lat: 40.19, lon: 29.06 }, default_zoom: 12, updated_at: now, source: "manual" };
+    case "agency": return { agency_id: "BUR_AG", city_id: "BUR", name: { tr: "Burulaş", en: "Burulas" }, phone: "4441616", website: "https://www.burulas.com.tr", updated_at: now, source: "manual" };
+    case "fare": return { fare_id: "BUR-tam", agency_id: "BUR_AG", name: { tr: "Tam Bilet", en: "Full Ticket" }, fare_type: "flat", price: 20, currency: "TRY", updated_at: now, source: "manual" };
+    case "holiday": return { date: "2026-10-29", country_id: "TR", name: { tr: "Cumhuriyet Bayramı", en: "Republic Day" }, applies_as: "sunday", updated_at: now, source: "manual" };
+    case "route": return { route_id: "BUR-1", slug: "1a-heykel-sehir-hastanesi", agency_id: "BUR_AG", name: { tr: "1/A Heykel - Şehir Hastanesi", en: "1/A Heykel - City Hospital" }, code: "1A", color: "#2563eb", vehicle_type: "bus", route_pattern: "round_trip", stop_mode: "fixed", updated_at: now, source: "manual" };
+    case "stop": return { stop_id: "BUR_ST_001", city_id: "BUR", name: { tr: "Heykel Durağı", en: "Heykel Stop" }, lat: 40.183, lon: 29.061, location_type: "stop", wheelchair_accessible: true, updated_at: now, source: "manual" };
     case "route_stop": return { route_id: "BUR-1", direction: 1, stop_id: "BUR_ST_001", sequence: 1, is_first_stop: true, is_last_stop: false, updated_at: now, source: "manual" };
     case "shape": return { shape_id: "SHP_BUR_1_1", route_id: "BUR-1", direction: 1, coordinates: [{ lat: 40.183, lon: 29.061 }, { lat: 40.185, lon: 29.065 }], updated_at: now, source: "manual" };
     case "trip": return { trip_id: "TRIP_BUR_1_101", route_id: "BUR-1", direction: 1, service_type: "monday", updated_at: now, source: "manual" };

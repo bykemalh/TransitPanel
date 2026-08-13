@@ -21,9 +21,38 @@ export type ShelterType = 'none' | 'open' | 'closed' | 'heated';
 export type FareType = 'flat';
 export type PaymentMethod = 'cash' | 'smart_card' | 'credit_card' | 'mobile' | 'contactless' | 'qr';
 
+export interface MultilingualText {
+  tr: string;
+  en?: string;
+  [lang: string]: string | undefined;
+}
+
+export function formatName(name: string | MultilingualText | null | undefined, lang = 'tr'): string {
+  if (!name) return '';
+  if (typeof name === 'string') return name;
+  if (typeof name === 'object' && name !== null) {
+    return name[lang] || name['tr'] || name['en'] || (Object.values(name)[0] as string) || '';
+  }
+  return String(name);
+}
+
+export function toMultilingualName(name: string | MultilingualText | null | undefined, defaultTr = ''): MultilingualText {
+  if (!name) return { tr: defaultTr };
+  if (typeof name === 'string') return { tr: name };
+  if (typeof name === 'object' && name !== null) {
+    if ('tr' in name && typeof (name as any).tr === 'string') {
+      return name as MultilingualText;
+    }
+    const firstVal = Object.values(name)[0];
+    const trVal = typeof firstVal === 'string' ? firstVal : defaultTr;
+    return { ...name, tr: trVal };
+  }
+  return { tr: defaultTr };
+}
+
 export interface Country {
   country_id: string;
-  name: string;
+  name: MultilingualText;
   updated_at: string;
   source?: string | null;
 }
@@ -44,7 +73,7 @@ export interface City {
   city_id: string;
   slug: string;
   country_id: string;
-  name: string;
+  name: MultilingualText;
   timezone: string;
   center: CityCenter;
   default_zoom?: number | null;
@@ -56,7 +85,7 @@ export interface City {
 export interface Agency {
   agency_id: string;
   city_id: string;
-  name: string;
+  name: MultilingualText;
   phone?: string | null;
   website?: string | null;
   updated_at: string;
@@ -66,8 +95,7 @@ export interface Agency {
 export interface Fare {
   fare_id: string;
   agency_id: string;
-  name: string;
-  name_en: string;
+  name: MultilingualText;
   fare_type: FareType;
   price: number;
   currency: string;
@@ -81,7 +109,7 @@ export interface Fare {
 export interface Holiday {
   date: string;
   country_id: string;
-  name: string;
+  name: MultilingualText;
   applies_as: Weekday;
   updated_at: string;
   source?: string | null;
@@ -89,8 +117,9 @@ export interface Holiday {
 
 export interface Route {
   route_id: string;
+  slug: string;
   agency_id: string;
-  name: string;
+  name: MultilingualText;
   code?: string | null;
   color?: string | null;
   vehicle_type: VehicleType;
@@ -123,7 +152,7 @@ export interface Platform {
 export interface Stop {
   stop_id: string;
   city_id: string;
-  name: string;
+  name: MultilingualText;
   lat: number;
   lon: number;
   location_type?: LocationType | null;

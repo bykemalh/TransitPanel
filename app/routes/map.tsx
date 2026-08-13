@@ -1,6 +1,7 @@
 import { useLoaderData, useSearchParams, useNavigate, useNavigation } from "react-router";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { getCountriesAndCities, getRoutesForCity, getMapRouteDetails } from "../lib/db-operations.server";
+import { formatName } from "../lib/types";
 import {
   MapPin,
   Bus,
@@ -210,7 +211,7 @@ export default function MapPage() {
         fillOpacity: 1,
       }).addTo(layerGroup);
 
-      marker.bindTooltip(`<b>#${stop.sequence} - ${stop.stop_name}</b>`, {
+      marker.bindTooltip(`<b>#${stop.sequence} - ${formatName(stop.stop_name)}</b>`, {
         permanent: false,
         direction: "top",
       });
@@ -315,8 +316,9 @@ export default function MapPage() {
 
   const filteredRoutesList = routes.filter((r) =>
     routeSearchText
-      ? r.name.toLowerCase().includes(routeSearchText.toLowerCase()) ||
-        (r.code && r.code.toLowerCase().includes(routeSearchText.toLowerCase()))
+      ? formatName(r.name).toLowerCase().includes(routeSearchText.toLowerCase()) ||
+        (r.code && r.code.toLowerCase().includes(routeSearchText.toLowerCase())) ||
+        (r.slug && r.slug.toLowerCase().includes(routeSearchText.toLowerCase()))
       : true
   );
 
@@ -380,7 +382,7 @@ export default function MapPage() {
             >
               {cities.map((c) => (
                 <option key={c.city_id} value={c.city_id}>
-                  {c.country_name} - {c.name} ({c.slug})
+                  {formatName(c.country_name)} - {formatName(c.name)} ({c.slug})
                 </option>
               ))}
             </select>
@@ -427,7 +429,7 @@ export default function MapPage() {
                         />
                         <span className="truncate">
                           {r.code ? `[${r.code}] ` : ""}
-                          {r.name}
+                          {formatName(r.name)}
                         </span>
                       </div>
                       {isSelected && (
@@ -514,9 +516,9 @@ export default function MapPage() {
                 </div>
                 <h3 className="font-bold text-slate-900 text-sm">
                   {activeRouteObj.code ? `${activeRouteObj.code} - ` : ""}
-                  {activeRouteObj.name}
+                  {formatName(activeRouteObj.name)}
                 </h3>
-                <p className="text-xs text-slate-500">Ajans: {activeRouteObj.agency_name || "Varsayılan"}</p>
+                <p className="text-xs text-slate-500">Ajans: {formatName(activeRouteObj.agency_name) || "Varsayılan"}</p>
               </div>
 
               {/* View Toggle: Stops vs 7-Day Timetable */}
@@ -550,7 +552,7 @@ export default function MapPage() {
                               <span className="w-5 h-5 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-600 flex-shrink-0">
                                 {stop.sequence}
                               </span>
-                              <span className="truncate">{stop.stop_name}</span>
+                              <span className="truncate">{formatName(stop.stop_name)}</span>
                             </div>
                             <MapPin className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
                           </div>
@@ -569,7 +571,7 @@ export default function MapPage() {
                     </h4>
                     {selectedStop && (
                       <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded font-semibold truncate max-w-[140px]">
-                        {selectedStop.stop_name}
+                        {formatName(selectedStop.stop_name)}
                       </span>
                     )}
                   </div>

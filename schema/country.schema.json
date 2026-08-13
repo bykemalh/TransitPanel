@@ -5,10 +5,26 @@
   "properties": {
     "country_id": {
       "type": "string",
-      "description": "ISO 3166-1 alpha-2 kod önerilir, örn. TR"
+      "pattern": "^[A-Z]{2}$",
+      "description": "ISO 3166-1 alpha-2 ülke kodu zorunludur, örn. TR"
     },
     "name": {
-      "type": "string"
+      "type": "object",
+      "properties": {
+        "tr": {
+          "type": "string"
+        },
+        "en": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tr"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Çoklu dil isim nesnesi. 'tr' zorunludur, diğer dil kodları (en, ar, de vb.) opsiyoneldir."
     },
     "updated_at": {
       "type": "string",

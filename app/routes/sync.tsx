@@ -1,6 +1,7 @@
 import { useLoaderData, useSearchParams, useSubmit, useActionData, useNavigation } from "react-router";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { getCountriesAndCities, getRoutesForCity, getMapRouteDetails, saveRouteEditorData } from "../lib/db-operations.server";
+import { formatName, type MultilingualText } from "../lib/types";
 import {
   MapPin,
   Bus,
@@ -181,7 +182,7 @@ export default function RouteEditorPage() {
       failedDirections: 0,
     });
 
-    addBulkLog("info", `🚀 Toplu Auto Snap işlemi başlatılıyor... (Şehir: ${activeCityObj?.name || activeCityId}, Toplam ${routes.length} Hat)`);
+    addBulkLog("info", `🚀 Toplu Auto Snap işlemi başlatılıyor... (Şehir: ${formatName(activeCityObj?.name) || activeCityId}, Toplam ${routes.length} Hat)`);
     addBulkLog("info", `🌐 Valhalla Server URL: ${valhallaUrl}`);
 
     let totalSuccess = 0;
@@ -194,7 +195,7 @@ export default function RouteEditorPage() {
       }
 
       const routeItem = routes[i];
-      const routeName = `${routeItem.code ? `[${routeItem.code}] ` : ""}${routeItem.name}`;
+      const routeName = `${routeItem.code ? `[${routeItem.code}] ` : ""}${formatName(routeItem.name)}`;
 
       setBulkProgress((prev) => ({
         ...prev,
@@ -351,7 +352,7 @@ export default function RouteEditorPage() {
   // Editing State
   const [editMode, setEditMode] = useState<"view" | "add_shape" | "add_stop">("view");
   const [shapeCoords, setShapeCoords] = useState<Array<{ lat: number; lon: number }>>([]);
-  const [stopsList, setStopsList] = useState<Array<{ stop_id: string; city_id: string; name: string; lat: number; lon: number; sequence: number }>>([]);
+  const [stopsList, setStopsList] = useState<Array<{ stop_id: string; city_id: string; name: string | MultilingualText; lat: number; lon: number; sequence: number }>>([]);
 
   const editModeRef = useRef<"view" | "add_shape" | "add_stop">("view");
   const stopsListRef = useRef<any[]>([]);
@@ -535,7 +536,7 @@ export default function RouteEditorPage() {
           🚏 Durak #${idx + 1}
         </div>
         <div style="font-weight: bold; color: #0f172a; font-size: 13px;">
-          ${stop.name}
+          ${formatName(stop.name)}
         </div>
         <div style="font-size: 11px; font-family: monospace; color: #64748b;">
           Konum: ${stop.lat}, ${stop.lon}
@@ -555,10 +556,10 @@ export default function RouteEditorPage() {
         const renameBtn = document.getElementById(`rename-stop-${idx}`);
         if (renameBtn) {
           renameBtn.onclick = () => {
-            const newName = prompt("Yeni Durak Adını Girin:", stop.name);
+            const newName = prompt("Yeni Durak Adını Girin:", formatName(stop.name));
             if (newName && newName.trim()) {
               setStopsList((prev) =>
-                prev.map((s) => (s.stop_id === stop.stop_id ? { ...s, name: newName.trim() } : s))
+                prev.map((s) => (s.stop_id === stop.stop_id ? { ...s, name: { tr: newName.trim() } } : s))
               );
             }
             map.closePopup();
@@ -649,7 +650,7 @@ export default function RouteEditorPage() {
             const newStop = {
               stop_id: `${activeCityIdRef.current}_ST_${Date.now()}`,
               city_id: activeCityIdRef.current,
-              name: stopName.trim(),
+              name: { tr: stopName.trim() },
               lat,
               lon,
               sequence: stopsListRef.current.length + 1,
@@ -784,8 +785,9 @@ export default function RouteEditorPage() {
 
   const filteredRoutesList = routes.filter((r) =>
     routeSearchText
-      ? r.name.toLowerCase().includes(routeSearchText.toLowerCase()) ||
-        (r.code && r.code.toLowerCase().includes(routeSearchText.toLowerCase()))
+      ? formatName(r.name).toLowerCase().includes(routeSearchText.toLowerCase()) ||
+        (r.code && r.code.toLowerCase().includes(routeSearchText.toLowerCase())) ||
+        (r.slug && r.slug.toLowerCase().includes(routeSearchText.toLowerCase()))
       : true
   );
 
@@ -858,7 +860,7 @@ export default function RouteEditorPage() {
               >
                 {cities.map((c) => (
                   <option key={c.city_id} value={c.city_id}>
-                    {c.country_name} - {c.name}
+                    {formatName(c.country_name)} - {formatName(c.name)}
                   </option>
                 ))}
               </select>
@@ -885,7 +887,7 @@ export default function RouteEditorPage() {
                       r.route_id === activeRouteId ? "bg-blue-50 text-blue-700 font-bold" : "hover:bg-slate-50 text-slate-700"
                     }`}
                   >
-                    <span className="truncate">{r.code ? `[${r.code}] ` : ""}{r.name}</span>
+                    <span className="truncate">{r.code ? `[${r.code}] ` : ""}{formatName(r.name)}</span>
                     {r.route_id === activeRouteId && <Check className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />}
                   </button>
                 ))}
@@ -1017,7 +1019,7 @@ export default function RouteEditorPage() {
                 {stopsList.map((st, i) => (
                   <div key={st.stop_id} className="flex items-center justify-between bg-white px-2 py-1.5 rounded border border-slate-200 text-xs">
                     <div className="truncate">
-                      <span className="font-bold text-slate-800">#{i + 1}</span> <span className="font-semibold text-slate-900">{st.name}</span>
+                      <span className="font-bold text-slate-800">#{i + 1}</span> <span className="font-semibold text-slate-900">{formatName(st.name)}</span>
                       <span className="block text-[10px] text-slate-400 font-mono">{st.lat}, {st.lon}</span>
                     </div>
                     <button onClick={() => handleRemoveStop(st.stop_id)} className="text-rose-600 hover:underline flex-shrink-0 ml-2">
@@ -1068,7 +1070,7 @@ export default function RouteEditorPage() {
                     Toplu Valhalla Rota Eşitleme Motoru (Bulk Auto Snap)
                   </h3>
                   <p className="text-xs text-slate-400">
-                    {activeCityObj ? `${activeCityObj.country_name} - ${activeCityObj.name}` : activeCityId} şehrine ait tüm hatların rotalarını Valhalla ile otonom olarak yollara çeker ve kaydeder.
+                    {activeCityObj ? `${formatName(activeCityObj.country_name)} - ${formatName(activeCityObj.name)}` : activeCityId} şehrine ait tüm hatların rotalarını Valhalla ile otonom olarak yollara çeker ve kaydeder.
                   </p>
                 </div>
               </div>
@@ -1091,7 +1093,7 @@ export default function RouteEditorPage() {
                   <label className="text-[10px] font-bold text-slate-400 uppercase">Seçili Şehir</label>
                   <div className="font-bold text-white flex items-center gap-1.5 truncate">
                     <Layers className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
-                    <span className="truncate">{activeCityObj ? activeCityObj.name : activeCityId} ({routes.length} Hat)</span>
+                    <span className="truncate">{activeCityObj ? formatName(activeCityObj.name) : activeCityId} ({routes.length} Hat)</span>
                   </div>
                 </div>
 

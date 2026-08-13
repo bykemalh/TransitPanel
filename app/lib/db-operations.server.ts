@@ -1,5 +1,6 @@
 import { query, pool } from "./db.server";
-import type { EntityName, ImportConflictAnalysis, DiffResult } from "./types";
+import { toMultilingualName } from "./types";
+import type { EntityName, ImportConflictAnalysis, DiffResult, MultilingualText } from "./types";
 
 // =====================================================================
 // DASHBOARD STATS
@@ -38,8 +39,8 @@ export async function getDashboardStats() {
     getTableCounts(),
     query<{
       city_id: string;
-      city_name: string;
-      country_name: string;
+      city_name: MultilingualText;
+      country_name: MultilingualText;
       routes_count: number;
       stops_count: number;
     }>(`
@@ -51,7 +52,7 @@ export async function getDashboardStats() {
         (SELECT COUNT(*)::int FROM stop s WHERE s.city_id = c.city_id) as stops_count
       FROM city c
       JOIN country co ON c.country_id = co.country_id
-      ORDER BY c.name ASC
+      ORDER BY c.name->>'tr' ASC
     `),
     query<{ vehicle_type: string; count: number }>(`
       SELECT vehicle_type, COUNT(*)::int as count 
@@ -90,7 +91,7 @@ export async function getCountriesAndCities() {
       co.name as country_name
     FROM city c
     JOIN country co ON co.country_id = c.country_id
-    ORDER BY co.name, c.name
+    ORDER BY co.name->>'tr', c.name->>'tr'
   `);
   return res.rows;
 }
@@ -99,13 +100,13 @@ export async function getRoutesForCity(cityId: string) {
   const res = await query(
     `
     SELECT 
-      r.route_id, r.agency_id, r.name, r.code, r.color, 
+      r.route_id, r.slug, r.agency_id, r.name, r.code, r.color, 
       r.vehicle_type, r.route_pattern, r.stop_mode,
       a.name as agency_name
     FROM route r
     JOIN agency a ON r.agency_id = a.agency_id
     WHERE a.city_id = $1
-    ORDER BY r.code, r.name
+    ORDER BY r.code, r.name->>'tr'
   `,
     [cityId]
   );
@@ -191,7 +192,7 @@ export async function saveRouteEditorData(
   routeId: string,
   direction: number,
   shapeCoordinates: Array<{ lat: number; lon: number }>,
-  stops: Array<{ stop_id: string; city_id: string; name: string; lat: number; lon: number; sequence: number }>
+  stops: Array<{ stop_id: string; city_id: string; name: string | MultilingualText; lat: number; lon: number; sequence: number }>
 ) {
   const client = await pool.connect();
   try {
@@ -218,6 +219,7 @@ export async function saveRouteEditorData(
     for (let i = 0; i < stops.length; i++) {
       const s = stops[i];
       const seq = i + 1;
+      const stopNameJson = JSON.stringify(toMultilingualName(s.name));
 
       // Upsert stop location
       await client.query(
@@ -228,7 +230,7 @@ export async function saveRouteEditorData(
            lat = EXCLUDED.lat,
            lon = EXCLUDED.lon,
            updated_at = EXCLUDED.updated_at`,
-        [s.stop_id, s.city_id, s.name, s.lat, s.lon, updated_at, "route_editor"]
+        [s.stop_id, s.city_id, stopNameJson, s.lat, s.lon, updated_at, "route_editor"]
       );
 
       // Insert route_stop sequence
@@ -265,38 +267,38 @@ export async function getEntityData(entity: EntityName, page = 1, limit = 50, se
 
   switch (entity) {
     case "country":
-      countText = `SELECT COUNT(*)::int FROM country ${search ? "WHERE name ILIKE $1 OR country_id ILIKE $1" : ""}`;
-      text = `SELECT * FROM country ${search ? "WHERE name ILIKE $1 OR country_id ILIKE $1" : ""} ORDER BY name LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
+      countText = `SELECT COUNT(*)::int FROM country ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR country_id ILIKE $1)" : ""}`;
+      text = `SELECT * FROM country ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR country_id ILIKE $1)" : ""} ORDER BY name->>'tr' LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
       break;
     case "city":
-      countText = `SELECT COUNT(*)::int FROM city ${search ? "WHERE name ILIKE $1 OR slug ILIKE $1" : ""}`;
-      text = `SELECT city_id, slug, country_id, name, timezone, center_lat as "lat", center_lon as "lon", default_zoom, bounds_north, bounds_south, bounds_east, bounds_west, updated_at, source FROM city ${search ? "WHERE name ILIKE $1 OR slug ILIKE $1" : ""} ORDER BY name LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
+      countText = `SELECT COUNT(*)::int FROM city ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR slug ILIKE $1 OR city_id ILIKE $1)" : ""}`;
+      text = `SELECT city_id, slug, country_id, name, timezone, center_lat as "lat", center_lon as "lon", default_zoom, bounds_north, bounds_south, bounds_east, bounds_west, updated_at, source FROM city ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR slug ILIKE $1 OR city_id ILIKE $1)" : ""} ORDER BY name->>'tr' LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
       break;
     case "agency":
-      countText = `SELECT COUNT(*)::int FROM agency ${search ? "WHERE name ILIKE $1 OR agency_id ILIKE $1" : ""}`;
-      text = `SELECT * FROM agency ${search ? "WHERE name ILIKE $1 OR agency_id ILIKE $1" : ""} ORDER BY name LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
+      countText = `SELECT COUNT(*)::int FROM agency ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR agency_id ILIKE $1)" : ""}`;
+      text = `SELECT * FROM agency ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR agency_id ILIKE $1)" : ""} ORDER BY name->>'tr' LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
       break;
     case "fare":
-      countText = `SELECT COUNT(*)::int FROM fare ${search ? "WHERE name ILIKE $1 OR fare_id ILIKE $1" : ""}`;
-      text = `SELECT * FROM fare ${search ? "WHERE name ILIKE $1 OR fare_id ILIKE $1" : ""} ORDER BY name LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
+      countText = `SELECT COUNT(*)::int FROM fare ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR fare_id ILIKE $1)" : ""}`;
+      text = `SELECT * FROM fare ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR fare_id ILIKE $1)" : ""} ORDER BY name->>'tr' LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
       break;
     case "holiday":
-      countText = `SELECT COUNT(*)::int FROM holiday ${search ? "WHERE name ILIKE $1 OR country_id ILIKE $1" : ""}`;
-      text = `SELECT * FROM holiday ${search ? "WHERE name ILIKE $1 OR country_id ILIKE $1" : ""} ORDER BY date DESC LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
+      countText = `SELECT COUNT(*)::int FROM holiday ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR country_id ILIKE $1)" : ""}`;
+      text = `SELECT * FROM holiday ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR country_id ILIKE $1)" : ""} ORDER BY date DESC LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
       break;
     case "route":
-      countText = `SELECT COUNT(*)::int FROM route ${search ? "WHERE name ILIKE $1 OR code ILIKE $1 OR route_id ILIKE $1" : ""}`;
-      text = `SELECT * FROM route ${search ? "WHERE name ILIKE $1 OR code ILIKE $1 OR route_id ILIKE $1" : ""} ORDER BY route_id LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
+      countText = `SELECT COUNT(*)::int FROM route ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR slug ILIKE $1 OR code ILIKE $1 OR route_id ILIKE $1)" : ""}`;
+      text = `SELECT * FROM route ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR slug ILIKE $1 OR code ILIKE $1 OR route_id ILIKE $1)" : ""} ORDER BY route_id LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}`;
       break;
     case "stop":
-      countText = `SELECT COUNT(*)::int FROM stop ${search ? "WHERE name ILIKE $1 OR stop_id ILIKE $1" : ""}`;
+      countText = `SELECT COUNT(*)::int FROM stop ${search ? "WHERE (name->>'tr' ILIKE $1 OR name->>'en' ILIKE $1 OR stop_id ILIKE $1)" : ""}`;
       text = `
         SELECT s.*, 
           COALESCE((
             SELECT json_agg(p.*) FROM stop_platform p WHERE p.stop_id = s.stop_id
           ), '[]'::json) as platforms
         FROM stop s
-        ${search ? "WHERE s.name ILIKE $1 OR s.stop_id ILIKE $1" : ""}
+        ${search ? "WHERE (s.name->>'tr' ILIKE $1 OR s.name->>'en' ILIKE $1 OR s.stop_id ILIKE $1)" : ""}
         ORDER BY s.stop_id
         LIMIT $${search ? 2 : 1} OFFSET $${search ? 3 : 2}
       `;
@@ -405,7 +407,7 @@ export async function exportAllData() {
 
   const agency = (await query(`SELECT agency_id, city_id, name, phone, website, updated_at, source FROM agency ORDER BY agency_id`)).rows;
 
-  const fareRaw = (await query(`SELECT fare_id, agency_id, name, name_en, fare_type, price, currency, payment_methods, transfer_duration, transfer_limit, updated_at, source FROM fare ORDER BY fare_id`)).rows;
+  const fareRaw = (await query(`SELECT fare_id, agency_id, name, fare_type, price, currency, payment_methods, transfer_duration, transfer_limit, updated_at, source FROM fare ORDER BY fare_id`)).rows;
   const fare = fareRaw.map((f) => ({
     ...f,
     price: Number(f.price),
@@ -413,7 +415,7 @@ export async function exportAllData() {
 
   const holiday = (await query(`SELECT date::text, country_id, name, applies_as, updated_at, source FROM holiday ORDER BY country_id, date`)).rows;
 
-  const route = (await query(`SELECT route_id, agency_id, name, code, color, vehicle_type, fare_id, route_pattern, stop_mode, updated_at, source FROM route ORDER BY route_id`)).rows;
+  const route = (await query(`SELECT route_id, slug, agency_id, name, code, color, vehicle_type, fare_id, route_pattern, stop_mode, updated_at, source FROM route ORDER BY route_id`)).rows;
 
   const stopRaw = (await query(`
     SELECT s.*, 
@@ -643,8 +645,40 @@ async function calculateEntityDiff(entity: EntityName, uploadedItems: any[]): Pr
   };
 }
 
+// Helper to sanitize route slug
+function generateRouteSlug(routeId: string, code?: string | null, name?: any): string {
+  const rawBase = code || (typeof name === "object" && name?.tr ? name.tr : typeof name === "string" ? name : routeId);
+  const clean = String(rawBase)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return clean || `route-${routeId.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
 // Complete Bulletproof Sanitizer & Normalizer for 100% Data Integrity
 async function sanitizeAndNormalizePayload(client: any, payload: Partial<Record<EntityName, any[]>>) {
+  // Normalize names across all entities
+  if (payload.country) {
+    payload.country.forEach((c) => { c.name = toMultilingualName(c.name); });
+  }
+  if (payload.city) {
+    payload.city.forEach((c) => { c.name = toMultilingualName(c.name); });
+  }
+  if (payload.agency) {
+    payload.agency.forEach((a) => { a.name = toMultilingualName(a.name); });
+  }
+  if (payload.fare) {
+    payload.fare.forEach((f) => {
+      f.name = toMultilingualName(f.name || (f as any).name_en);
+    });
+  }
+  if (payload.holiday) {
+    payload.holiday.forEach((h) => { h.name = toMultilingualName(h.name); });
+  }
+  if (payload.stop) {
+    payload.stop.forEach((s) => { s.name = toMultilingualName(s.name); });
+  }
+
   // 1. Build routePatternMap from DB and payload.route
   const routePatternMap = new Map<string, "loop" | "round_trip">();
   const dbRoutes = await client.query("SELECT route_id, route_pattern FROM route");
@@ -653,6 +687,10 @@ async function sanitizeAndNormalizePayload(client: any, payload: Partial<Record<
   }
   if (payload.route) {
     for (const r of payload.route) {
+      r.name = toMultilingualName(r.name);
+      if (!r.slug) {
+        r.slug = generateRouteSlug(r.route_id, r.code, r.name);
+      }
       if (r.route_id && r.route_pattern) {
         routePatternMap.set(r.route_id, r.route_pattern);
       }
@@ -947,7 +985,12 @@ async function bulkInsertCountries(client: any, items: any[]) {
   items.forEach((item, idx) => {
     const base = idx * 4;
     valueRows.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4})`);
-    params.push(item.country_id, item.name, item.updated_at || new Date().toISOString(), item.source || "import");
+    params.push(
+      item.country_id,
+      JSON.stringify(toMultilingualName(item.name)),
+      item.updated_at || new Date().toISOString(),
+      item.source || "import"
+    );
   });
 
   const sql = `
@@ -972,7 +1015,7 @@ async function bulkInsertCities(client: any, items: any[]) {
       item.city_id,
       item.slug,
       item.country_id,
-      item.name,
+      JSON.stringify(toMultilingualName(item.name)),
       item.timezone,
       item.center?.lat ?? item.lat ?? 0,
       item.center?.lon ?? item.lon ?? 0,
@@ -1014,7 +1057,15 @@ async function bulkInsertAgencies(client: any, items: any[]) {
   items.forEach((item, idx) => {
     const base = idx * 7;
     valueRows.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`);
-    params.push(item.agency_id, item.city_id, item.name, item.phone || null, item.website || null, item.updated_at || new Date().toISOString(), item.source || "import");
+    params.push(
+      item.agency_id,
+      item.city_id,
+      JSON.stringify(toMultilingualName(item.name)),
+      item.phone || null,
+      item.website || null,
+      item.updated_at || new Date().toISOString(),
+      item.source || "import"
+    );
   });
 
   const sql = `
@@ -1036,13 +1087,12 @@ async function bulkInsertFares(client: any, items: any[]) {
   const valueRows: string[] = [];
 
   items.forEach((item, idx) => {
-    const base = idx * 12;
-    valueRows.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12})`);
+    const base = idx * 11;
+    valueRows.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11})`);
     params.push(
       item.fare_id,
       item.agency_id,
-      item.name,
-      item.name_en,
+      JSON.stringify(toMultilingualName(item.name || item.name_en)),
       item.fare_type || "flat",
       item.price,
       item.currency,
@@ -1055,12 +1105,11 @@ async function bulkInsertFares(client: any, items: any[]) {
   });
 
   const sql = `
-    INSERT INTO fare (fare_id, agency_id, name, name_en, fare_type, price, currency, payment_methods, transfer_duration, transfer_limit, updated_at, source)
+    INSERT INTO fare (fare_id, agency_id, name, fare_type, price, currency, payment_methods, transfer_duration, transfer_limit, updated_at, source)
     VALUES ${valueRows.join(", ")}
     ON CONFLICT (fare_id) DO UPDATE SET
       agency_id = EXCLUDED.agency_id,
       name = EXCLUDED.name,
-      name_en = EXCLUDED.name_en,
       fare_type = EXCLUDED.fare_type,
       price = EXCLUDED.price,
       currency = EXCLUDED.currency,
@@ -1080,7 +1129,14 @@ async function bulkInsertHolidays(client: any, items: any[]) {
   items.forEach((item, idx) => {
     const base = idx * 6;
     valueRows.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`);
-    params.push(item.date, item.country_id, item.name, item.applies_as || "sunday", item.updated_at || new Date().toISOString(), item.source || "import");
+    params.push(
+      item.date,
+      item.country_id,
+      JSON.stringify(toMultilingualName(item.name)),
+      item.applies_as || "sunday",
+      item.updated_at || new Date().toISOString(),
+      item.source || "import"
+    );
   });
 
   const sql = `
@@ -1100,12 +1156,13 @@ async function bulkInsertRoutes(client: any, items: any[]) {
   const valueRows: string[] = [];
 
   items.forEach((item, idx) => {
-    const base = idx * 11;
-    valueRows.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11})`);
+    const base = idx * 12;
+    valueRows.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12})`);
     params.push(
       item.route_id,
+      item.slug || generateRouteSlug(item.route_id, item.code, item.name),
       item.agency_id,
-      item.name,
+      JSON.stringify(toMultilingualName(item.name)),
       item.code || null,
       item.color || null,
       item.vehicle_type,
@@ -1118,9 +1175,10 @@ async function bulkInsertRoutes(client: any, items: any[]) {
   });
 
   const sql = `
-    INSERT INTO route (route_id, agency_id, name, code, color, vehicle_type, fare_id, route_pattern, stop_mode, updated_at, source)
+    INSERT INTO route (route_id, slug, agency_id, name, code, color, vehicle_type, fare_id, route_pattern, stop_mode, updated_at, source)
     VALUES ${valueRows.join(", ")}
     ON CONFLICT (route_id) DO UPDATE SET
+      slug = EXCLUDED.slug,
       agency_id = EXCLUDED.agency_id,
       name = EXCLUDED.name,
       code = EXCLUDED.code,
@@ -1145,7 +1203,7 @@ async function bulkInsertStops(client: any, items: any[]) {
     params.push(
       item.stop_id,
       item.city_id,
-      item.name,
+      JSON.stringify(toMultilingualName(item.name)),
       item.lat,
       item.lon,
       item.location_type || null,

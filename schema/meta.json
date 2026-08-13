@@ -1,0 +1,20 @@
+{
+  "name": "TransitJSON",
+  "format_version": "0.2.0",
+  "schema_draft": "http://json-schema.org/draft-07/schema#",
+  "updated_at": "2026-08-13",
+  "description": "JSON Schema definitions for TransitJSON, a JSON-based format for public transit data.",
+  "entities": [
+    "agency",
+    "city",
+    "country",
+    "fare",
+    "holiday",
+    "route",
+    "route_stop",
+    "shape",
+    "stop",
+    "stop_time",
+    "trip"
+  ]
+}

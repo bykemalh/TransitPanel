@@ -1,5 +1,6 @@
 import { useLoaderData, Link } from "react-router";
 import { getDashboardStats } from "../lib/db-operations.server";
+import { formatName } from "../lib/types";
 import {
   Globe,
   Building2,
@@ -127,8 +128,8 @@ export default function Dashboard() {
                 <tbody className="divide-y divide-slate-100">
                   {cities.map((city) => (
                     <tr key={city.city_id} className="hover:bg-slate-50/80 transition">
-                      <td className="py-3 px-3 font-medium text-slate-900">{city.city_name}</td>
-                      <td className="py-3 px-3 text-slate-600">{city.country_name}</td>
+                      <td className="py-3 px-3 font-medium text-slate-900">{formatName(city.city_name)}</td>
+                      <td className="py-3 px-3 text-slate-600">{formatName(city.country_name)}</td>
                       <td className="py-3 px-3 text-right font-semibold text-blue-600">
                         {city.routes_count}
                       </td>

@@ -24,10 +24,12 @@
       "minimum": 1
     },
     "is_first_stop": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "Veri üreten sistemler bu alanın sequence ile çelişmediğini (sequence=1 ise true) garanti etmelidir."
     },
     "is_last_stop": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "Veri üreten sistemler bu alanın sequence ile çelişmediğini (son durak ise true) garanti etmelidir."
     },
     "updated_at": {
       "type": "string",
