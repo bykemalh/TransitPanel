@@ -13,4 +13,5 @@ export default [
   route("api/valhalla", "routes/api.valhalla.ts"),
   route("api/route-details", "routes/api.route-details.ts"),
   route("api/save-route", "routes/api.save-route.ts"),
+  route("api/osm-snap", "routes/api.osm-snap.ts"),
 ] satisfies RouteConfig;

@@ -26,6 +26,7 @@ import {
   Terminal,
   Layers,
   Sparkles,
+  TrainFront,
 } from "lucide-react";
 
 export async function loader({ request }: { request: Request }) {
@@ -139,6 +140,7 @@ export default function RouteEditorPage() {
   const [routeSearchText, setRouteSearchText] = useState<string>("");
   const [valhallaUrl, setValhallaUrl] = useState<string>("https://valhala.bykemalh.me");
   const [isValhallaRouting, setIsValhallaRouting] = useState<boolean>(false);
+  const [isOsmSnapping, setIsOsmSnapping] = useState<boolean>(false);
 
   // Bulk Auto Snap State
   const [isBulkModalOpen, setIsBulkModalOpen] = useState<boolean>(false);
@@ -164,6 +166,82 @@ export default function RouteEditorPage() {
     const time = new Date().toLocaleTimeString("tr-TR");
     const id = Math.random().toString(36).substring(2, 9);
     setBulkLogs((prev) => [...prev, { id, time, type, text }]);
+  };
+
+  /**
+   * Araç tipine göre Valhalla costing modeli ve seçeneklerini belirler.
+   * - bus, trolleybus, minibus, coach → "bus" costing
+   * - tram, metro, rail, monorail, cable_tram, funicular, gondola → "auto" costing (en geniş yol ağı)
+   * - ferry, water_taxi → "auto" costing + use_ferry=1
+   * 
+   * NOT: Valhalla'da "bus" costing sadece otobüs yollarını kullanır.
+   * Raylı sistemler (tram, metro vb.) için doğrudan bir costing modu yoktur,
+   * ancak "auto" costing en geniş yol ağını kullanarak makul eşleştirme sağlar.
+   */
+  const getValhallaCosting = (vehicleType?: string): { costing: string; costing_options: Record<string, any>; label: string } => {
+    switch (vehicleType) {
+      case "bus":
+      case "trolleybus":
+      case "minibus":
+      case "coach":
+        return {
+          costing: "bus",
+          costing_options: {
+            bus: { use_highways: 0.1, use_tolls: 0.5, use_ferry: 0 },
+          },
+          label: "bus",
+        };
+
+      case "tram":
+      case "cable_tram":
+        return {
+          costing: "auto",
+          costing_options: {
+            auto: { use_highways: 0, use_tolls: 0, use_ferry: 0, top_speed: 60 },
+          },
+          label: "auto (tramvay)",
+        };
+
+      case "metro":
+      case "monorail":
+      case "funicular":
+      case "gondola":
+        return {
+          costing: "auto",
+          costing_options: {
+            auto: { use_highways: 0.3, use_tolls: 0, use_ferry: 0 },
+          },
+          label: "auto (metro/raylı)",
+        };
+
+      case "rail":
+        return {
+          costing: "auto",
+          costing_options: {
+            auto: { use_highways: 0.5, use_tolls: 0, use_ferry: 0 },
+          },
+          label: "auto (tren)",
+        };
+
+      case "ferry":
+      case "water_taxi":
+        return {
+          costing: "auto",
+          costing_options: {
+            auto: { use_highways: 0, use_tolls: 0, use_ferry: 1.0 },
+          },
+          label: "auto (deniz)",
+        };
+
+      default:
+        return {
+          costing: "bus",
+          costing_options: {
+            bus: { use_highways: 0.1, use_tolls: 0.5, use_ferry: 0 },
+          },
+          label: "bus (varsayılan)",
+        };
+    }
   };
 
   const handleStartBulkSnap = async () => {
@@ -219,11 +297,19 @@ export default function RouteEditorPage() {
         const isLoop = routeObj.route_pattern === "loop";
         const targetDirections = isLoop ? [0] : [1, 2];
 
+        // Araç tipine göre doğru costing stratejisi seç
+        const costingConfig = getValhallaCosting(routeObj.vehicle_type);
+
+        // Raylı sistem mi yoksa yol mu? Buna göre snap yöntemi seçilecek
+        const RAIL_TYPES = ["tram", "cable_tram", "metro", "monorail", "funicular", "gondola", "rail", "ferry", "water_taxi"];
+        const useOsmSnap = RAIL_TYPES.includes(routeObj.vehicle_type);
+
         for (const dir of targetDirections) {
           if (abortBulkRef.current) break;
 
           const dirLabel = isLoop ? "Ring (Yön 0)" : (dir === 1 ? "Gidiş (Yön 1)" : "Dönüş (Yön 2)");
-          addBulkLog("info", `  🔄 ${routeName} - ${dirLabel}: Snap isteği gönderiliyor...`);
+          const snapMethod = useOsmSnap ? "OSM Rail Snap" : `Valhalla (${costingConfig.label})`;
+          addBulkLog("info", `  🔄 ${routeName} - ${dirLabel}: Snap isteği gönderiliyor... [${snapMethod}]`);
 
           let shape = shapes.find((s: any) => Number(s.direction) === dir);
           let rawCoords: Array<{ lat: number; lon: number }> = [];
@@ -242,51 +328,77 @@ export default function RouteEditorPage() {
             continue;
           }
 
-          const proxyPayload = {
-            targetUrl: valhallaUrl.trim(),
-            shape: rawCoords,
-            costing: "bus",
-            costing_options: {
-              bus: {
-                use_highways: 0.1,
-                use_tolls: 0.5,
-                use_ferry: 0,
-              },
-            },
-            shape_match: "map_snap",
-            shape_format: "polyline6",
-            filters: { action: "include" },
-            directed: false,
-          };
-
-          const vRes = await fetch("/api/valhalla", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(proxyPayload),
-          });
-
-          const vData = await vRes.json();
-
-          if (!vRes.ok || vData.error) {
-            addBulkLog("error", `  ❌ ${routeName} - ${dirLabel}: Valhalla hatası (${vData.message || `HTTP ${vRes.status}`})`);
-            totalFailed++;
-            continue;
-          }
-
           let snappedPoints: Array<{ lat: number; lon: number }> = [];
 
-          if (vData.shape) {
-            snappedPoints = decodeValhallaPolyline(vData.shape, 6);
-          } else if (vData.trip && vData.trip.legs) {
-            vData.trip.legs.forEach((leg: any) => {
-              if (leg.shape) {
-                snappedPoints.push(...decodeValhallaPolyline(leg.shape, 6));
+          if (useOsmSnap) {
+            // --- OSM Overpass Rail Snap ---
+            try {
+              const osmRes = await fetch("/api/osm-snap", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  shape: rawCoords,
+                  vehicleType: routeObj.vehicle_type,
+                }),
+              });
+
+              const osmData = await osmRes.json();
+
+              if (!osmRes.ok || osmData.error) {
+                addBulkLog("error", `  ❌ ${routeName} - ${dirLabel}: OSM snap hatası (${osmData.message || `HTTP ${osmRes.status}`})`);
+                totalFailed++;
+                continue;
               }
+
+              snappedPoints = osmData.shape || [];
+              if (snappedPoints.length > 0) {
+                addBulkLog("info", `  🛤️ ${routeName} - ${dirLabel}: ${osmData.stats?.waysFound || 0} ray segmenti bulundu.`);
+              }
+            } catch (osmErr: any) {
+              addBulkLog("error", `  ❌ ${routeName} - ${dirLabel}: OSM snap isteği başarısız (${osmErr.message})`);
+              totalFailed++;
+              continue;
+            }
+          } else {
+            // --- Valhalla Road Snap ---
+            const proxyPayload = {
+              targetUrl: valhallaUrl.trim(),
+              shape: rawCoords,
+              costing: costingConfig.costing,
+              costing_options: costingConfig.costing_options,
+              shape_match: "map_snap",
+              shape_format: "polyline6",
+              filters: { action: "include" },
+              directed: false,
+            };
+
+            const vRes = await fetch("/api/valhalla", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(proxyPayload),
             });
+
+            const vData = await vRes.json();
+
+            if (!vRes.ok || vData.error) {
+              addBulkLog("error", `  ❌ ${routeName} - ${dirLabel}: Valhalla hatası (${vData.message || `HTTP ${vRes.status}`})`);
+              totalFailed++;
+              continue;
+            }
+
+            if (vData.shape) {
+              snappedPoints = decodeValhallaPolyline(vData.shape, 6);
+            } else if (vData.trip && vData.trip.legs) {
+              vData.trip.legs.forEach((leg: any) => {
+                if (leg.shape) {
+                  snappedPoints.push(...decodeValhallaPolyline(leg.shape, 6));
+                }
+              });
+            }
           }
 
           if (snappedPoints.length === 0) {
-            addBulkLog("warning", `  ⚠️ ${routeName} - ${dirLabel}: Valhalla nokta üretemedi.`);
+            addBulkLog("warning", `  ⚠️ ${routeName} - ${dirLabel}: Snap sonucu boş döndü.`);
             totalFailed++;
             continue;
           }
@@ -320,7 +432,7 @@ export default function RouteEditorPage() {
             totalFailed++;
           } else {
             totalSuccess++;
-            addBulkLog("success", `  ✅ ${routeName} - ${dirLabel}: ${snappedPoints.length} nokta ile yollara eşitlendi ve kaydedildi.`);
+            addBulkLog("success", `  ✅ ${routeName} - ${dirLabel}: ${snappedPoints.length} nokta ile ${useOsmSnap ? "raylara" : "yollara"} eşitlendi ve kaydedildi.`);
 
             if (routeItem.route_id === activeRouteId && dir === effectiveDirection) {
               setShapeCoords(snappedPoints);
@@ -710,17 +822,13 @@ export default function RouteEditorPage() {
     setIsValhallaRouting(true);
     try {
       const shape = shapeCoords.map((c) => ({ lat: c.lat, lon: c.lon }));
+      // Aktif hattın araç tipine göre costing stratejisini belirle
+      const costingConfig = getValhallaCosting(activeRoute?.vehicle_type);
       const proxyPayload = {
         targetUrl: valhallaUrl.trim(),
         shape,
-        costing: "bus",
-        costing_options: {
-          bus: {
-            use_highways: 0.1,
-            use_tolls: 0.5,
-            use_ferry: 0,
-          },
-        },
+        costing: costingConfig.costing,
+        costing_options: costingConfig.costing_options,
         shape_match: "map_snap",
         shape_format: "polyline6",
         filters: {
@@ -768,6 +876,47 @@ export default function RouteEditorPage() {
       alert("Valhalla Shape Snap Hatası: " + err.message);
     } finally {
       setIsValhallaRouting(false);
+    }
+  };
+
+  /**
+   * OSM Overpass API kullanarak raylı sistem rotalarını gerçek ray geometrisine snap eder.
+   * Valhalla'nın desteklemediği tramvay, metro, tren, füniküler vb. için kullanılır.
+   */
+  const handleOsmSnap = async () => {
+    if (shapeCoords.length < 2) {
+      alert("Snap için en az 2 shape noktası gereklidir!");
+      return;
+    }
+
+    setIsOsmSnapping(true);
+    try {
+      const res = await fetch("/api/osm-snap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shape: shapeCoords.map((c) => ({ lat: c.lat, lon: c.lon })),
+          vehicleType: activeRoute?.vehicle_type || "tram",
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        throw new Error(data.message || `OSM snap hatası: HTTP ${res.status}`);
+      }
+
+      if (data.shape && data.shape.length > 0) {
+        setShapeCoords(data.shape);
+        const stats = data.stats;
+        alert(`✅ OSM Rail Snap başarılı!\n\nGiriş: ${stats.inputPoints} nokta\nÇıkış: ${stats.outputPoints} nokta\nBulunan ray sayısı: ${stats.waysFound}\nTag'ler: ${stats.railwayTags.join(", ")}`);
+      } else {
+        throw new Error("OSM snap sonucu boş döndü.");
+      }
+    } catch (err: any) {
+      alert("OSM Rail Snap Hatası: " + err.message);
+    } finally {
+      setIsOsmSnapping(false);
     }
   };
 
@@ -972,11 +1121,20 @@ export default function RouteEditorPage() {
               />
               <button
                 onClick={handleValhallaSnap}
-                disabled={isValhallaRouting || stopsList.length < 2}
+                disabled={isValhallaRouting || isOsmSnapping || shapeCoords.length < 2}
                 className="w-full py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-2xs transition flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
               >
                 {isValhallaRouting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
-                <span>Seçili Hat Yollara Eşitle (Snap)</span>
+                <span>Yollara Eşitle — Valhalla (Otobüs)</span>
+              </button>
+
+              <button
+                onClick={handleOsmSnap}
+                disabled={isOsmSnapping || isValhallaRouting || shapeCoords.length < 2}
+                className="w-full py-2 bg-violet-600 hover:bg-violet-700 text-white font-bold text-xs rounded-xl shadow-2xs transition flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {isOsmSnapping ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <TrainFront className="w-3.5 h-3.5" />}
+                <span>Raylara Eşitle — OSM (Tramvay/Metro/Tren)</span>
               </button>
 
               <button

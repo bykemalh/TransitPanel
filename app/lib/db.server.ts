@@ -6,7 +6,7 @@ const { Pool } = pg;
 
 const connectionString =
   process.env.DATABASE_URL ||
-  "postgresql://postgres:jycmgxlbjbrszuaf@localhost:5435/postgres";
+  "postgresql://postgres:rggtuxztcsnhd6lg@45.143.11.184:5434/postgres";
 
 // Global pool instance to prevent multiple connections in dev mode (HMR)
 declare global {

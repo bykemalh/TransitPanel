@@ -673,7 +673,7 @@ export default function MapPage() {
             <div className="flex items-center justify-between border-b border-slate-100 pb-2">
               <div className="flex items-center gap-2">
                 <MapPin className="w-4 h-4 text-blue-600" />
-                <h4 className="font-bold text-slate-900 text-sm">{selectedStop.stop_name}</h4>
+                <h4 className="font-bold text-slate-900 text-sm">{formatName(selectedStop.stop_name)}</h4>
               </div>
               <button
                 onClick={() => setSelectedStop(null)}
